@@ -1,20 +1,70 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://ai.google.dev/static/site-assets/images/share-ais-513315318.png" />
-</div>
+# WSa1 (理工科教材伴读助手)
 
-# Run and deploy your AI Studio app
+这是一个由理工科学生在学习过程中探索搭建的实验性辅助工具。
+最初的出发点，是希望解决传统 AI 工具难以同时阅读多本厚教材、公式推导容易断流、以及笔记难以直接导出为规范学术格式的痛点。
 
-This contains everything you need to run your app locally.
+> **⚠️ 现状说明 / 风险提示**：
+> 本项目目前仅为一个非常早期的**粗糙原型（WIP / Prototype）**。
+> 整体链路刚刚打通，尚未经过充分的测试与工业级验证，**代码中仍存在较多已知与未知的 Bug**（如上传稳定性问题、网络断连处理等），仅供个人学习、折腾与交流参考，请勿用于关键生产环境。
+## 💡 探索的核心思路
 
-View your app in AI Studio: https://ai.studio/apps/2c26b014-d0c9-4f4f-9930-69396b11f21b
+为了在有限的硬件和上下文条件下阅读多本教材，本项目尝试了以下折中设计：
 
-## Run Locally
+1. **目录索引与局部切片（尝试模拟人类翻书）**：
+   - 放弃将动辄数十兆的整本教材一次性塞入单次请求的蛮力做法；
+   - 在书籍入库时尝试提取其目录大纲（TOC）；提问时先依据目录由模型推测相关章节，再通过本地工具（`pdf-lib`）切出目标起止页码的微型片段送入模型，以规避网络载荷过大与上下文过载。
 
-**Prerequisites:**  Node.js
+2. **动态模型探测（减少硬编码）**：
+   - 不在代码中强行写死特定模型代号，尝试通过接口动态拉取服务商（Google / OpenAI 兼容端点如 DeepSeek）当前可用的模型列表，供用户自行选择。
 
+3. **学术格式对接尝试**：
+   - 尝试在前端将回答中的公式与表格转译为 `ctexart` 论文模板；
+   - 若本地环境安装了 `xelatex`，可尝试调用编译并展示简易的矢量 PDF 预览，方便后续整理笔记。
+## 🛠️ 本地运行指南 (测试环境: Ubuntu Linux)
 
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+本项目目前主要在 Ubuntu Linux 环境下进行开发与测试。
+
+### 1. 系统基础环境准备
+运行本项目需要 Node.js 环境；若需启用本地真正的 PDF 编译，还需要安装系统级 LaTeX 引擎：
+
+```bash
+# 安装 Node.js 与包管理工具
+sudo apt update && sudo apt install -y nodejs npm
+
+# (可选) 若需本地实时编译 PDF，需安装 XeLaTeX 及中文支持
+sudo apt install -y texlive-xetex texlive-lang-chinese texlive-latex-extra
+```
+### 2.获取代码与安装依赖
+```bash
+# 克隆仓库
+git clone https://github.com/Bi-Tianrui/WSa1.git
+cd WSa1
+
+# 安装前端与服务端依赖 (国内网络环境建议使用镜像源并加上 --legacy-peer-deps 规避版本冲突)
+npm install --legacy-peer-deps --registry=https://registry.npmmirror.com
+```
+### 3.本地启动
+```bash
+npm run dev
+```
+启动成功后，浏览器访问终端中提示的本地地址（默认通常为 http://localhost:3000）。
+首次使用需在界面中填入您自己的 API Key。
+## ⚠️ 已知问题与局限性 (Known Issues)
+
+由于作者水平有限且开发周期仓促，当前版本存在诸多明显的工程缺陷与待优化项，在此开诚布公列出：
+
+1. **大文件与多书籍上传的鲁棒性不足**：
+   - 面对动辄数十兆、带出版商权限保护或结构特殊的 PDF 时，后端的解析与切片逻辑仍有概率报错中断；
+   - 批量多文件上传的并发与状态管理较为脆弱，建议单本逐步挂载。
+
+2. **长连接网络抖动容易引发中断**：
+   - 长篇定理推导耗时较长，若网络环境（或外部代理）不够稳定，易在流式传输末尾因超时引发 503 等异常，前端的断点续传与内容保全机制仍较粗糙。
+
+3. **老旧扫描版教材的语义解析盲区**：
+   - 目前依赖 PDF 内部原生书签或简单的正文规则匹配；对于纯图片、无文字层的低质量旧扫描教材，尚不具备本地 OCR 能力，大纲定位会退化为固定页数的生硬切块。
+
+4. **非多模态模型（纯文本模型）的切片文本抽取有待完善**：
+   - 目前针对纯文本大模型（如 DeepSeek 等）的 PDF 切片转纯文本模块仍存在格式兼容性缺陷，提取不够稳定。
+
+5. **双引擎代码略显臃肿杂乱**：
+   - 仓库内同时保留了初期的 Python 单文件试验版（`app.py` / `run.sh`）与后期的 TypeScript 全栈版，前后端依赖较为冗余，架构有待进一步解耦与瘦身。
