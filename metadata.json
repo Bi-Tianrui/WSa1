@@ -1,0 +1,6 @@
+{
+  "name": "理工科教材伴读助手 (STEM Book Companion)",
+  "description": "基于 Google Gemini 官方与 OpenAI / DeepSeek 通用协议多厂商支持的理工科教材伴读助手，具备全平台 API 动态检测与自适应模型下拉选择引擎，集成 VS Code / Overleaf 风格 LaTeX 实时编译与高清 PDF 矢量双联预览室。",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
