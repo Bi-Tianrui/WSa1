@@ -13,7 +13,9 @@ import {
   HelpCircle,
   Clock,
   Zap,
-  FileCode
+  FileCode,
+  Info,
+  Square
 } from 'lucide-react';
 import { ChatMessage, MountedBook, GeminiModelType } from '../types';
 import { FormattedMathContent } from '../utils/latexParser';
@@ -24,6 +26,7 @@ interface ChatAreaProps {
   selectedModel: GeminiModelType;
   isStreaming: boolean;
   onSendMessage: (text: string) => void;
+  onStopStreaming?: () => void;
   apiKey: string;
   onImportToLatex?: (content: string) => void;
 }
@@ -34,6 +37,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
   selectedModel,
   isStreaming,
   onSendMessage,
+  onStopStreaming,
   apiKey,
   onImportToLatex,
 }) => {
@@ -252,6 +256,29 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                       )}
                     </div>
 
+                    {/* Backend notices: scanned book, routing miss, degraded extraction */}
+                    {msg.notices && msg.notices.length > 0 && (
+                      <div className="mb-2.5 space-y-1.5">
+                        {msg.notices.map((notice, idx) => (
+                          <div
+                            key={idx}
+                            className={`flex items-start gap-2 px-2.5 py-2 rounded-lg text-[11px] leading-relaxed border ${
+                              notice.level === 'warn'
+                                ? 'bg-amber-50 border-amber-200 text-amber-900'
+                                : 'bg-slate-50 border-slate-200 text-slate-600'
+                            }`}
+                          >
+                            {notice.level === 'warn' ? (
+                              <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-px text-amber-600" />
+                            ) : (
+                              <Info className="w-3.5 h-3.5 shrink-0 mt-px text-slate-500" />
+                            )}
+                            <span>{notice.message}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
                     {/* DeepSeek Reasoning Content if available */}
                     {msg.reasoning && (
                       <details className="mb-2.5 p-2 rounded-lg bg-slate-50/90 border border-indigo-100 text-xs text-slate-600 group" open={isStreaming}>
@@ -274,7 +301,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                           <div className="w-2 h-2 rounded-full bg-blue-500 animate-bounce [animation-delay:0.3s]"></div>
                         </div>
                         <span className="text-slate-500 font-medium">
-                          教授正在检索教材与推演 LaTeX 公式...
+                          {msg.stage || '教授正在检索教材与推演 LaTeX 公式...'}
                         </span>
                       </div>
                     ) : (
@@ -368,18 +395,29 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
               />
             </div>
 
-            <button
-              type="submit"
-              disabled={!inputText.trim() || isStreaming}
-              className={`p-3 rounded-xl flex items-center justify-center transition-all ${
-                inputText.trim() && !isStreaming
-                  ? 'bg-blue-600 hover:bg-blue-700 text-white shadow-xs cursor-pointer'
-                  : 'bg-slate-200 text-slate-400 cursor-not-allowed'
-              }`}
-              title="发送提问"
-            >
-              <Send className="w-4 h-4" />
-            </button>
+            {isStreaming && onStopStreaming ? (
+              <button
+                type="button"
+                onClick={onStopStreaming}
+                className="p-3 rounded-xl flex items-center justify-center bg-red-50 hover:bg-red-100 text-red-600 border border-red-200 transition-all cursor-pointer"
+                title="终止本轮生成"
+              >
+                <Square className="w-4 h-4 fill-current" />
+              </button>
+            ) : (
+              <button
+                type="submit"
+                disabled={!inputText.trim() || isStreaming}
+                className={`p-3 rounded-xl flex items-center justify-center transition-all ${
+                  inputText.trim() && !isStreaming
+                    ? 'bg-blue-600 hover:bg-blue-700 text-white shadow-xs cursor-pointer'
+                    : 'bg-slate-200 text-slate-400 cursor-not-allowed'
+                }`}
+                title="发送提问"
+              >
+                <Send className="w-4 h-4" />
+              </button>
+            )}
           </form>
 
           <div className="mt-2 text-center text-[11px] text-slate-400">

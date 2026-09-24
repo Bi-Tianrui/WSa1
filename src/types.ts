@@ -2,6 +2,17 @@ export interface TocItem {
   title: string;
   startPage: number;
   endPage?: number;
+  level?: number;
+}
+
+/** How readable a book's text layer is for text-only models. */
+export type TextLayerQuality = 'rich' | 'sparse' | 'none';
+
+export type TocSource = 'bookmarks' | 'text-scan' | 'synthesized';
+
+export interface StreamNotice {
+  level: 'info' | 'warn';
+  message: string;
 }
 
 export interface ScholarRouting {
@@ -27,6 +38,9 @@ export interface ChatMessage {
   cacheHandle?: string;
   responseTimeMs?: number;
   isError?: boolean;
+  errorHint?: string;
+  notices?: StreamNotice[];
+  stage?: string;
 }
 
 export interface CachedContentMeta {
@@ -50,6 +64,8 @@ export interface MountedBook {
   uploadTime: string;
   toc?: TocItem[];
   cachedContentHandle?: string;
+  tocSource?: TocSource;
+  textLayer?: TextLayerQuality;
 }
 
 export type GeminiModelType = string;

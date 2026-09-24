@@ -9,17 +9,29 @@ import { GoogleGenAI } from '@google/genai';
 import { GoogleAICacheManager } from '@google/generative-ai/server';
 import dotenv from 'dotenv';
 import multer from 'multer';
-import { PDFDocument } from 'pdf-lib';
-import { PDFParse } from 'pdf-parse';
 import {
-  extractBookOutline,
   slicePdf,
   getBookPath,
   getBookTocPath,
   resolvePdfMetadata,
-  TocItem,
+  extractPageRangeText,
+  estimateTokens,
+  truncateToTokenBudget,
+  clampPageRange,
+  MAX_SLICE_PAGES,
+  MAX_CONTEXT_TOKENS,
   BookMetadata,
 } from './server/pdfEngine';
+import {
+  SseChannel,
+  ProviderId,
+  supportsNativePdf,
+  resilientFetch,
+  classifyThrownFailure,
+  buildTocCatalog,
+  matchChapterLocally,
+  expandRange,
+} from './server/llmAdapter';
 
 dotenv.config();
 
@@ -315,7 +327,7 @@ app.post('/api/books/upload', upload.single('file'), handleBookUpload);
 app.post('/api/books/upload-chunk', upload.single('file'), handleBookUpload);
 
 // List all indexed textbooks stored on server
-app.get('/api/books', (req: Request, res: Response) => {
+app.get('/api/books', async (req: Request, res: Response) => {
   try {
     const files = fs.readdirSync(UPLOADS_DIR);
     const tocFiles = files.filter((f) => f.endsWith('_toc.json'));
@@ -324,14 +336,30 @@ app.get('/api/books', (req: Request, res: Response) => {
     for (const file of tocFiles) {
       const fullPath = path.join(UPLOADS_DIR, file);
       try {
-        const raw = fs.readFileSync(fullPath, 'utf-8');
-        const parsed = JSON.parse(raw);
+        let parsed = JSON.parse(fs.readFileSync(fullPath, 'utf-8'));
+        const pdfPath = getBookPath(parsed.id);
         // Verify corresponding PDF exists
-        if (fs.existsSync(getBookPath(parsed.id))) {
-          parsed.name = decodeOriginalFileName(parsed.name);
-          books.push(parsed);
+        if (!fs.existsSync(pdfPath)) continue;
+
+        parsed.name = decodeOriginalFileName(parsed.name);
+
+        // Indexes written before destination-aware outline parsing collapsed every
+        // chapter onto page 1; rebuild them once instead of routing against bad pages.
+        if (!parsed.tocSource) {
+          console.log(`[books] re-indexing legacy TOC for ${parsed.id}`);
+          parsed = await resolvePdfMetadata(
+            pdfPath,
+            parsed.name,
+            fs.statSync(pdfPath).size,
+            parsed.id
+          );
+          fs.writeFileSync(fullPath, JSON.stringify(parsed, null, 2), 'utf-8');
         }
-      } catch {}
+
+        books.push(parsed);
+      } catch (err) {
+        console.warn(`[books] skipping unreadable index ${file}:`, err);
+      }
     }
 
     res.json({ success: true, books });
@@ -474,6 +502,9 @@ const DEFAULT_SYSTEM_INSTRUCTION = `你是一位严谨、权威且富有耐心�
 // 3. CONTEXT CACHING & MODELS DISCOVERY APIS
 // ==========================================
 
+/** Upper bound on whole-book uploads to Gemini context caching. */
+const CACHE_UPLOAD_BUDGET_MB = 20;
+
 app.post('/api/cache/create', async (req: Request, res: Response): Promise<void> => {
   const { displayName = '大学教材知识库', bookIds = [], ttlMinutes = 60, customApiKey } = req.body;
 
@@ -495,13 +526,26 @@ app.post('/api/cache/create', async (req: Request, res: Response): Promise<void>
     const bookPdfPath = getBookPath(id);
     if (fs.existsSync(bookPdfPath)) {
       const buffer = fs.readFileSync(bookPdfPath);
+      totalSizeMb += buffer.length / (1024 * 1024);
+
+      // Context caching is the only path that uploads whole books. Keep it bounded so a
+      // stray call cannot recreate the million-token payload the TOC router exists to avoid.
+      if (totalSizeMb > CACHE_UPLOAD_BUDGET_MB) {
+        res.status(400).json({
+          success: false,
+          error:
+            `所选教材总体积约 ${totalSizeMb.toFixed(1)} MB，已超过 ${CACHE_UPLOAD_BUDGET_MB} MB 的整本缓存上限。` +
+            '厚教材请直接在对话中提问，系统会自动按目录定位并只切取相关章节。',
+        });
+        return;
+      }
+
       cacheParts.push({
         inlineData: {
           mimeType: 'application/pdf',
           data: buffer.toString('base64'),
         },
       });
-      totalSizeMb += buffer.length / (1024 * 1024);
     }
   }
 
@@ -763,91 +807,89 @@ interface RoutingDecision {
   startPage?: number;
   endPage?: number;
   rationale?: string;
+  source?: 'model' | 'keyword';
 }
 
-app.post('/api/chat', async (req: Request, res: Response): Promise<void> => {
-  const {
-    prompt,
-    history = [],
-    bookIds = [],
-    books = [],
-    model,
-    provider = 'gemini',
-    customApiKey,
-    baseUrl = 'https://api.deepseek.com/v1',
-    cachedContent,
-  } = req.body;
+const ROUTING_TIMEOUT_MS = 45_000;
+const CHAT_TIMEOUT_MS = 120_000;
 
-  if (!prompt || typeof prompt !== 'string') {
-    res.status(400).json({ error: 'Prompt is required and must be a string.' });
-    return;
+/** Upper bound on a single multimodal PDF slice handed to Gemini. */
+const NATIVE_PDF_BUDGET_KB = 8 * 1024;
+
+/** Replayed conversation is capped separately so it can never crowd out the textbook. */
+const HISTORY_TOKEN_BUDGET = 6_000;
+
+interface HistoryTurn {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
+/** Keeps the most recent turns that fit the history budget, oldest dropped first. */
+function normalizeHistory(history: any): HistoryTurn[] {
+  if (!Array.isArray(history)) return [];
+
+  const usable: HistoryTurn[] = [];
+  for (const item of history) {
+    if (!item?.content || typeof item.content !== 'string' || !item.content.trim()) continue;
+    if (item.id && String(item.id).startsWith('sys-')) continue;
+    if (item.isError) continue;
+    usable.push({ role: item.role === 'assistant' ? 'assistant' : 'user', content: item.content });
   }
 
-  // Set SSE streaming headers
-  res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
-  res.setHeader('Cache-Control', 'no-cache, no-transform');
-  res.setHeader('Connection', 'keep-alive');
-  res.setHeader('X-Accel-Buffering', 'no');
-  res.flushHeaders?.();
-
-  const startTime = Date.now();
-
-  // Consolidate mounted book IDs
-  const targetBookIds: string[] = [];
-  if (Array.isArray(bookIds)) {
-    bookIds.forEach((id: string) => {
-      if (typeof id === 'string' && id.trim()) targetBookIds.push(id.trim());
-    });
-  }
-  if (Array.isArray(books)) {
-    books.forEach((b: any) => {
-      const id = typeof b === 'string' ? b : b?.id;
-      if (id && !targetBookIds.includes(id)) targetBookIds.push(id);
-    });
+  const kept: HistoryTurn[] = [];
+  let tokens = 0;
+  for (let i = usable.length - 1; i >= 0; i--) {
+    const cost = estimateTokens(usable[i].content);
+    if (tokens + cost > HISTORY_TOKEN_BUDGET) break;
+    tokens += cost;
+    kept.unshift(usable[i]);
   }
 
-  // Load TOC metadata for mounted books
-  const mountedBookMetas: BookMetadata[] = [];
-  for (const id of targetBookIds) {
-    const tocPath = getBookTocPath(id);
-    if (fs.existsSync(tocPath)) {
-      try {
-        const content = fs.readFileSync(tocPath, 'utf-8');
-        mountedBookMetas.push(JSON.parse(content));
-      } catch {}
-    }
-  }
+  return kept;
+}
 
-  const apiKey = (customApiKey || req.headers['x-gemini-api-key'] || process.env.GEMINI_API_KEY) as string;
+interface RoutingContext {
+  prompt: string;
+  books: BookMetadata[];
+  provider: ProviderId;
+  model: string;
+  apiKey: string;
+  baseUrl: string;
+  channel: SseChannel;
+}
 
-  const activeModel = resolveDynamicModel(model, provider as any);
+/**
+ * Asks a model to pick the relevant chapter from the compact TOC catalog, and falls
+ * back to deterministic keyword matching whenever that call fails or returns junk.
+ * Routing never aborts the turn: worst case the answer proceeds without a slice.
+ */
+async function runRoutingAgent(ctx: RoutingContext): Promise<RoutingDecision | null> {
+  const { prompt, books, provider, model, apiKey, baseUrl, channel } = ctx;
+  if (books.length === 0) return null;
 
-  let routingDecision: RoutingDecision | null = null;
-  let slicedPdfResult: { buffer: Buffer; pageRange: [number, number]; sizeKb: number } | null = null;
+  const applyLocalFallback = (): RoutingDecision | null => {
+    const local = matchChapterLocally(prompt, books);
+    if (!local) return null;
+    return {
+      matched: true,
+      bookId: local.bookId,
+      bookName: local.bookName,
+      chapterTitle: local.chapterTitle,
+      startPage: local.startPage,
+      endPage: local.endPage,
+      rationale: '模型路由不可用，已按目录关键词本地匹配定位。',
+      source: 'keyword',
+    };
+  };
 
-  // -------------------------------------------------------------
-  // STAGE 1: TOC Routing Agent (动态模型智能图书管理员导航, ~0.5s)
-  // -------------------------------------------------------------
-  if (mountedBookMetas.length > 0 && activeModel) {
-    try {
-      // Build compact TOC catalog representation (< 5KB text)
-      const catalogLines: string[] = [];
-      mountedBookMetas.forEach((b, idx) => {
-        catalogLines.push(`【教材 ${idx + 1}】《${b.name}》（ID: ${b.id}，共 ${b.pageCount} 页）`);
-        if (b.toc && b.toc.length > 0) {
-          b.toc.slice(0, 40).forEach((t) => {
-            catalogLines.push(`  • ${t.title} (P${t.startPage}${t.endPage ? ` - P${t.endPage}` : ''})`);
-          });
-        }
-      });
-      const catalogText = catalogLines.join('\n');
+  if (!model || !apiKey) return applyLocalFallback();
 
-      const routingPrompt = `你是一位高校硬核学术图书管理员。
+  const routingPrompt = `你是一位高校硬核学术图书管理员。
 请根据以下教材微型目录索引，审阅学生的提问，快速精确定位出：该问题属于哪一本教材的哪一具体章节，以及最核心的研读起止页码范围 [startPage, endPage]。
 
 【严格约束】
-1. startPage 和 endPage 的跨度必须严格限制在 15 至 30 页以内（严禁超出 30 页）！
-2. 必须以严格合法的 JSON 对象输出，绝不要包含 markdown 代码块反引号以外的任何多余文字：
+1. startPage 与 endPage 的跨度必须控制在 ${MAX_SLICE_PAGES} 页以内。
+2. 必须只输出严格合法的 JSON 对象，不要输出任何多余文字：
 {
   "matched": true,
   "bookId": "教材的真实ID",
@@ -860,203 +902,360 @@ app.post('/api/chat', async (req: Request, res: Response): Promise<void> => {
 若问题与所列教材无关，输出: { "matched": false }
 
 【已挂载教材微型目录树】：
-${catalogText}
+${buildTocCatalog(books)}
 
 【学生提问】：
 ${prompt}`;
 
-      let rawRoutingJson = '';
+  let rawRoutingJson = '';
 
-      if (provider === 'gemini') {
-        if (apiKey && apiKey.trim()) {
-          const ai = new GoogleGenAI({
-            apiKey: apiKey.trim(),
-            httpOptions: { headers: { 'User-Agent': 'aistudio-build' } },
-          });
-
-          const routingResponse = await ai.models.generateContent({
-            model: activeModel,
-            contents: routingPrompt,
-            config: {
-              temperature: 0.1,
-              responseMimeType: 'application/json',
-            },
-          });
-
-          rawRoutingJson = routingResponse.text?.trim() || '';
+  try {
+    if (provider === 'gemini') {
+      const ai = new GoogleGenAI({
+        apiKey,
+        httpOptions: { headers: { 'User-Agent': 'aistudio-build' }, timeout: ROUTING_TIMEOUT_MS },
+      });
+      const routingResponse = await ai.models.generateContent({
+        model,
+        contents: routingPrompt,
+        config: {
+          temperature: 0.1,
+          responseMimeType: 'application/json',
+          abortSignal: channel.aborter.signal,
+        },
+      });
+      rawRoutingJson = routingResponse.text?.trim() || '';
+    } else {
+      const result = await resilientFetch(
+        `${baseUrl}/chat/completions`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${apiKey}`,
+            'User-Agent': 'aistudio-build/1.0',
+          },
+          body: JSON.stringify({
+            model,
+            messages: [{ role: 'user', content: routingPrompt }],
+            temperature: 0.1,
+          }),
+        },
+        {
+          timeoutMs: ROUTING_TIMEOUT_MS,
+          retries: 1,
+          signal: channel.aborter.signal,
+          onRetry: () => channel.stage('目录定位请求超时，正在自动重试…'),
         }
-      } else {
-        const key = (customApiKey || '').trim();
-        if (key) {
-          const cleanBaseUrl = (baseUrl || 'https://api.deepseek.com/v1').trim().replace(/\/+$/, '');
-          const fetchResp = await fetch(`${cleanBaseUrl}/chat/completions`, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              Authorization: `Bearer ${key}`,
-            },
-            body: JSON.stringify({
-              model: activeModel,
-              messages: [{ role: 'user', content: routingPrompt }],
-              temperature: 0.1,
-            }),
-          });
-          if (fetchResp.ok) {
-            const data: any = await fetchResp.json();
-            rawRoutingJson = data?.choices?.[0]?.message?.content || '';
-          }
-        }
-      }
+      );
 
-      const parsed = cleanAndParseJson(rawRoutingJson);
-      if (parsed && parsed.matched && parsed.bookId && parsed.startPage && parsed.endPage) {
-        routingDecision = {
-          matched: true,
-          bookId: String(parsed.bookId),
-          bookName: String(parsed.bookName || '教材'),
-          chapterTitle: String(parsed.chapterTitle || '核心章节'),
-          startPage: Math.max(1, Number(parsed.startPage)),
-          endPage: Math.max(Number(parsed.startPage), Number(parsed.endPage)),
-          rationale: parsed.rationale ? String(parsed.rationale) : undefined,
-        };
-
-        // Emit instant Scholar Navigator Badge via SSE
-        const routingLabel = `📖 智能图书管理员已查阅目录并锁定：《${routingDecision.bookName}》${routingDecision.chapterTitle} (P${routingDecision.startPage} - P${routingDecision.endPage})`;
-        res.write(
-          `data: ${JSON.stringify({
-            routing: {
-              ...routingDecision,
-              label: routingLabel,
-            },
-          })}\n\n`
-        );
+      if (!result.ok) {
+        console.warn('[routing] model call failed:', result.failure);
+        return applyLocalFallback();
       }
-    } catch (routeErr) {
-      console.warn('TOC Routing Agent warning (non-fatal):', routeErr);
+      const data: any = await result.response.json();
+      rawRoutingJson = data?.choices?.[0]?.message?.content || '';
     }
+  } catch (err) {
+    console.warn('[routing] model call threw:', err);
+    return applyLocalFallback();
   }
 
-  // -------------------------------------------------------------
-  // STAGE 2: Millisecond Surgical Slicing (毫秒级物理切片, ~0.02s)
-  // -------------------------------------------------------------
-  if (routingDecision && routingDecision.matched && routingDecision.bookId) {
-    try {
-      slicedPdfResult = await slicePdf(
-        routingDecision.bookId,
-        routingDecision.startPage || 1,
-        routingDecision.endPage || 30
-      );
-      // Sliced PDF is only ~200-800KB!
-    } catch (sliceErr) {
-      console.warn('Surgical slice warning:', sliceErr);
+  const parsed = cleanAndParseJson(rawRoutingJson);
+  if (!parsed?.matched || !parsed.bookId) return applyLocalFallback();
+
+  const book = books.find((b) => b.id === String(parsed.bookId));
+  if (!book) return applyLocalFallback();
+
+  const [startPage, endPage] = expandRange(
+    { title: '', startPage: Number(parsed.startPage) || 1, endPage: Number(parsed.endPage) || 1 },
+    book.pageCount
+  );
+
+  return {
+    matched: true,
+    bookId: book.id,
+    bookName: book.name,
+    chapterTitle: String(parsed.chapterTitle || '核心章节'),
+    startPage,
+    endPage,
+    rationale: parsed.rationale ? String(parsed.rationale) : undefined,
+    source: 'model',
+  };
+}
+
+type PreparedContext =
+  | { kind: 'none' }
+  | { kind: 'text'; text: string; pageRange: [number, number]; tokens: number }
+  | { kind: 'pdf'; base64: string; pageRange: [number, number]; sizeKb: number };
+
+/**
+ * Turns a routing decision into provider-appropriate context.
+ * Text-only providers get extracted prose; only Gemini receives a raw PDF stream, and
+ * either way the payload is bounded by MAX_SLICE_PAGES and MAX_CONTEXT_TOKENS.
+ */
+async function prepareTextbookContext(
+  decision: RoutingDecision,
+  book: BookMetadata,
+  provider: ProviderId,
+  channel: SseChannel
+): Promise<PreparedContext> {
+  const [startPage, endPage] = clampPageRange(
+    decision.startPage || 1,
+    decision.endPage || 1,
+    book.pageCount
+  );
+
+  if (supportsNativePdf(provider)) {
+    // Page-count alone does not bound payload size: image-heavy scans can produce a
+    // multi-megabyte slice, so shrink the range until the upload budget is respected.
+    let rangeEnd = endPage;
+    let slice = await slicePdf(book.id, startPage, rangeEnd);
+
+    while (slice.sizeKb > NATIVE_PDF_BUDGET_KB && rangeEnd - startPage + 1 > 4) {
+      rangeEnd = startPage + Math.floor((rangeEnd - startPage) / 2);
+      console.log(`[context] slice too large (${slice.sizeKb}KB), narrowing to P${startPage}-P${rangeEnd}`);
+      slice = await slicePdf(book.id, startPage, rangeEnd);
     }
+
+    return {
+      kind: 'pdf',
+      base64: slice.buffer.toString('base64'),
+      pageRange: slice.pageRange,
+      sizeKb: slice.sizeKb,
+    };
   }
 
-  // -------------------------------------------------------------
-  // STAGE 3: Deep Academic Reasoning & LaTeX Delivery (深度推演)
-  // -------------------------------------------------------------
+  const extracted = await extractPageRangeText(book.id, startPage, endPage);
 
-  // BRANCH A: OpenAI Compatible / DeepSeek
-  if (provider === 'openai_compatible') {
-    const key = (customApiKey || '').trim();
-    if (!key) {
-      res.write(
-        `data: ${JSON.stringify({
-          error: '缺少 OpenAI / DeepSeek 兼容协议 API Key，请在左侧配置面板中填写。',
-        })}\n\n`
-      );
-      res.end();
-      return;
+  if (extracted.quality === 'none') {
+    channel.notice(
+      'warn',
+      `《${book.name}》第 ${startPage}-${endPage} 页为扫描图片，没有可提取的文字层。` +
+        '当前纯文本模型（OpenAI / DeepSeek）无法识别图片内容，本轮将以通识推导作答。' +
+        '如需精读该教材原文，请在左侧切换到 Google Gemini（多模态可直读扫描页）。'
+    );
+    return { kind: 'none' };
+  }
+
+  const bounded = truncateToTokenBudget(extracted.text, MAX_CONTEXT_TOKENS);
+  if (bounded.length < extracted.text.length) {
+    console.log(`[context] truncated slice text to ${MAX_CONTEXT_TOKENS} tokens`);
+  }
+
+  if (extracted.quality === 'sparse') {
+    channel.notice(
+      'info',
+      `《${book.name}》第 ${startPage}-${endPage} 页文字层较稀疏，提取到的原文有限，回答可能存在缺漏。`
+    );
+  }
+
+  return {
+    kind: 'text',
+    text: bounded,
+    pageRange: extracted.pageRange,
+    tokens: estimateTokens(bounded),
+  };
+}
+
+app.post('/api/chat', async (req: Request, res: Response): Promise<void> => {
+  const {
+    prompt,
+    history = [],
+    bookIds = [],
+    books = [],
+    model,
+    provider: rawProvider = 'gemini',
+    customApiKey,
+    baseUrl = 'https://api.deepseek.com/v1',
+    cachedContent,
+  } = req.body;
+
+  if (!prompt || typeof prompt !== 'string') {
+    res.status(400).json({ error: '提问内容不能为空。' });
+    return;
+  }
+
+  const provider: ProviderId = rawProvider === 'openai_compatible' ? 'openai_compatible' : 'gemini';
+  const channel = new SseChannel(res);
+  const startTime = Date.now();
+
+  try {
+    // Consolidate mounted book IDs from either payload shape
+    const targetBookIds: string[] = [];
+    if (Array.isArray(bookIds)) {
+      bookIds.forEach((id: string) => {
+        if (typeof id === 'string' && id.trim()) targetBookIds.push(id.trim());
+      });
     }
-
-    const targetModel = activeModel;
-    if (!targetModel) {
-      res.write(
-        `data: ${JSON.stringify({
-          error: '未指定模型名称，且尚未探测到可用的兼容模型，请在左侧模型下拉框中选择。',
-        })}\n\n`
-      );
-      res.end();
-      return;
-    }
-
-    const cleanBaseUrl = (baseUrl || 'https://api.deepseek.com/v1').trim().replace(/\/+$/, '');
-
-    const messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [
-      { role: 'system', content: DEFAULT_SYSTEM_INSTRUCTION },
-    ];
-
-    if (slicedPdfResult) {
-      let sliceText = '';
-      try {
-        const parser = new PDFParse({ data: slicedPdfResult.buffer });
-        const textRes = await parser.getText();
-        sliceText = textRes.text;
-        await parser.destroy();
-      } catch {}
-
-      messages.push({
-        role: 'system',
-        content: `【高纯度教材物理切片精读素材 - 《${routingDecision?.bookName}》P${slicedPdfResult.pageRange[0]}-P${slicedPdfResult.pageRange[1]} (共 ${slicedPdfResult.sizeKb}KB)】:\n${sliceText.slice(0, 25000)}\n请结合上述切片原文，准确引用教材定理与具体页码展开详尽数学推导。`,
+    if (Array.isArray(books)) {
+      books.forEach((b: any) => {
+        const id = typeof b === 'string' ? b : b?.id;
+        if (id && !targetBookIds.includes(id)) targetBookIds.push(id);
       });
     }
 
-    if (Array.isArray(history)) {
-      for (const item of history) {
-        if (!item.content || typeof item.content !== 'string') continue;
-        if (item.id && String(item.id).startsWith('sys-')) continue;
-        if (item.isError) continue;
-        messages.push({
-          role: item.role === 'assistant' ? 'assistant' : 'user',
-          content: item.content,
+    const mountedBookMetas: BookMetadata[] = [];
+    for (const id of targetBookIds) {
+      const tocPath = getBookTocPath(id);
+      if (!fs.existsSync(tocPath)) continue;
+      try {
+        mountedBookMetas.push(JSON.parse(fs.readFileSync(tocPath, 'utf-8')));
+      } catch {}
+    }
+
+    const apiKey = String(
+      customApiKey || req.headers['x-gemini-api-key'] || process.env.GEMINI_API_KEY || ''
+    ).trim();
+    const activeModel = resolveDynamicModel(model, provider);
+    const cleanBaseUrl = String(baseUrl || 'https://api.deepseek.com/v1').trim().replace(/\/+$/, '');
+
+    if (!apiKey) {
+      channel.fail({
+        code: 'auth',
+        message:
+          provider === 'gemini'
+            ? '缺少 Google Gemini API Key。'
+            : '缺少 OpenAI / DeepSeek 兼容协议 API Key。',
+        hint: '请在左侧配置面板填写有效的 API Key 后重试。',
+      });
+      return;
+    }
+
+    if (!activeModel) {
+      channel.fail({
+        code: 'not_found',
+        message: '尚未选择可用的模型。',
+        hint: '请点击左侧「刷新探测」拉取模型列表，并在下拉框中选择一个模型。',
+      });
+      return;
+    }
+
+    // -------------------------------------------------------------
+    // STAGE 1: TOC routing (model first, deterministic keyword fallback)
+    // -------------------------------------------------------------
+    let decision: RoutingDecision | null = null;
+    if (mountedBookMetas.length > 0) {
+      channel.stage('正在查阅教材目录，定位相关章节…');
+      decision = await runRoutingAgent({
+        prompt,
+        books: mountedBookMetas,
+        provider,
+        model: activeModel,
+        apiKey,
+        baseUrl: cleanBaseUrl,
+        channel,
+      });
+    }
+
+    // -------------------------------------------------------------
+    // STAGE 2: Bounded slicing / text extraction for the chosen provider
+    // -------------------------------------------------------------
+    let context: PreparedContext = { kind: 'none' };
+    const routedBook = decision?.bookId
+      ? mountedBookMetas.find((b) => b.id === decision!.bookId)
+      : undefined;
+
+    if (decision?.matched && routedBook) {
+      channel.stage('正在切取目标章节原文…');
+      try {
+        context = await prepareTextbookContext(decision, routedBook, provider, channel);
+      } catch (sliceErr) {
+        console.warn('[slice] failed, continuing without textbook context:', sliceErr);
+        channel.notice('warn', '教材切片失败，本轮将以通识推导作答。');
+        context = { kind: 'none' };
+      }
+
+      if (context.kind !== 'none') {
+        const [rangeStart, rangeEnd] = context.pageRange;
+        decision.startPage = rangeStart;
+        decision.endPage = rangeEnd;
+        const prefix = decision.source === 'keyword' ? '📖 已按目录关键词定位' : '📖 智能图书管理员已查阅目录并锁定';
+        channel.send({
+          routing: {
+            ...decision,
+            label: `${prefix}：《${decision.bookName}》${decision.chapterTitle} (P${rangeStart} - P${rangeEnd})`,
+          },
         });
       }
+    } else if (mountedBookMetas.length > 0) {
+      channel.notice('info', '未能在已挂载教材中定位到对应章节，本轮以通识推导作答。');
     }
 
-    messages.push({ role: 'user', content: prompt });
+    const normalizedHistory = normalizeHistory(history);
+    channel.stage('正在等待模型推演…');
 
-    try {
-      const chatResponse = await fetch(`${cleanBaseUrl}/chat/completions`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${key}`,
-          'User-Agent': 'aistudio-build/1.0',
+    // -------------------------------------------------------------
+    // STAGE 3A: OpenAI-compatible providers (pure text only)
+    // -------------------------------------------------------------
+    if (provider === 'openai_compatible') {
+      const messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [
+        { role: 'system', content: DEFAULT_SYSTEM_INSTRUCTION },
+      ];
+
+      if (context.kind === 'text') {
+        messages.push({
+          role: 'system',
+          content: `【教材原文精读素材 - 《${decision?.bookName}》第 ${context.pageRange[0]} - ${context.pageRange[1]} 页】
+${context.text}
+
+以上为从教材 PDF 中切出目标页码并转换得到的纯文本原文，请严格结合该原文作答，引用定理时标注具体页码。`,
+        });
+      }
+
+      for (const turn of normalizedHistory) {
+        messages.push({ role: turn.role, content: turn.content });
+      }
+      messages.push({ role: 'user', content: prompt });
+
+      const result = await resilientFetch(
+        `${cleanBaseUrl}/chat/completions`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${apiKey}`,
+            'User-Agent': 'aistudio-build/1.0',
+          },
+          body: JSON.stringify({ model: activeModel, messages, stream: true }),
         },
-        body: JSON.stringify({
-          model: targetModel,
-          messages,
-          stream: true,
-        }),
-      });
+        {
+          timeoutMs: CHAT_TIMEOUT_MS,
+          retries: 2,
+          signal: channel.aborter.signal,
+          onRetry: (attempt, failure) =>
+            channel.stage(`连接模型失败（${failure.message}），正在第 ${attempt} 次自动重试…`),
+        }
+      );
 
-      if (!chatResponse.ok) {
-        let errJson: any = {};
-        try {
-          errJson = await chatResponse.json();
-        } catch {}
-        res.write(
-          `data: ${JSON.stringify({
-            error: errJson?.error?.message || errJson?.message || `HTTP ${chatResponse.status}`,
-          })}\n\n`
-        );
-        res.end();
+      if (!result.ok) {
+        channel.fail(result.failure);
         return;
       }
 
-      const reader = chatResponse.body?.getReader();
+      const reader = result.response.body?.getReader();
       if (!reader) {
-        res.write(`data: ${JSON.stringify({ error: '无法读取响应流' })}\n\n`);
-        res.end();
+        channel.fail({
+          code: 'upstream',
+          message: '模型服务未返回可读的数据流。',
+          hint: '请重试，或确认该模型支持流式输出。',
+        });
         return;
       }
 
       const decoder = new TextDecoder('utf-8');
       let buffer = '';
+      let produced = false;
 
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
+        if (channel.isClosed) {
+          try {
+            await reader.cancel();
+          } catch {}
+          return;
+        }
 
         buffer += decoder.decode(value, { stream: true });
         const lines = buffer.split('\n');
@@ -1065,92 +1264,65 @@ ${prompt}`;
         for (const line of lines) {
           const trimmed = line.trim();
           if (!trimmed || trimmed.startsWith(':') || trimmed === 'data: [DONE]') continue;
-          if (trimmed.startsWith('data: ')) {
-            try {
-              const parsed = JSON.parse(trimmed.slice(6).trim());
-              const delta = parsed.choices?.[0]?.delta;
-              if (delta) {
-                if (delta.content) {
-                  res.write(`data: ${JSON.stringify({ text: delta.content })}\n\n`);
-                } else if (delta.reasoning_content) {
-                  res.write(`data: ${JSON.stringify({ text: delta.reasoning_content })}\n\n`);
-                }
-              }
-            } catch {}
-          }
+          if (!trimmed.startsWith('data: ')) continue;
+          try {
+            const parsed = JSON.parse(trimmed.slice(6).trim());
+            const delta = parsed.choices?.[0]?.delta;
+            if (!delta) continue;
+            if (delta.reasoning_content) {
+              produced = true;
+              channel.send({ reasoning: delta.reasoning_content });
+            }
+            if (delta.content) {
+              produced = true;
+              channel.send({ text: delta.content });
+            }
+          } catch {}
         }
       }
 
-      const elapsedMs = Date.now() - startTime;
-      res.write(`data: ${JSON.stringify({ done: true, responseTimeMs: elapsedMs })}\n\n`);
-      res.end();
-      return;
-    } catch (err: any) {
-      res.write(`data: ${JSON.stringify({ error: err?.message || '网络错误' })}\n\n`);
-      res.end();
+      if (!produced) {
+        channel.fail({
+          code: 'upstream',
+          message: '模型返回了空响应，未生成任何内容。',
+          hint: '请重试，或在左侧更换其他模型。',
+        });
+        return;
+      }
+
+      channel.end({ done: true, responseTimeMs: Date.now() - startTime, routing: decision });
       return;
     }
-  }
 
-  // BRANCH B: Google Gemini Official
-  if (!apiKey || !apiKey.trim()) {
-    res.write(`data: ${JSON.stringify({ error: '缺少 Google Gemini API Key。' })}\n\n`);
-    res.end();
-    return;
-  }
-
-  try {
+    // -------------------------------------------------------------
+    // STAGE 3B: Google Gemini (native multimodal PDF)
+    // -------------------------------------------------------------
     const ai = new GoogleGenAI({
-      apiKey: apiKey.trim(),
-      httpOptions: { headers: { 'User-Agent': 'aistudio-build' } },
+      apiKey,
+      httpOptions: { headers: { 'User-Agent': 'aistudio-build' }, timeout: CHAT_TIMEOUT_MS },
     });
-
-    const targetModel = activeModel;
-    if (!targetModel) {
-      res.write(
-        `data: ${JSON.stringify({
-          error: '未指定 Google Gemini 模型名称，且尚未检测到可用模型，请点击刷新探测或在下拉框中选择。',
-        })}\n\n`
-      );
-      res.end();
-      return;
-    }
 
     const formattedContents: Array<{
       role: 'user' | 'model';
       parts: Array<{ text?: string; inlineData?: { mimeType: string; data: string } }>;
     }> = [];
 
-    if (Array.isArray(history) && history.length > 0) {
-      for (const item of history) {
-        if (!item.content || typeof item.content !== 'string') continue;
-        if (item.id && String(item.id).startsWith('sys-')) continue;
-        if (item.isError) continue;
-        formattedContents.push({
-          role: item.role === 'user' ? 'user' : 'model',
-          parts: [{ text: item.content }],
-        });
-      }
+    for (const turn of normalizedHistory) {
+      formattedContents.push({
+        role: turn.role === 'user' ? 'user' : 'model',
+        parts: [{ text: turn.content }],
+      });
     }
-
     while (formattedContents.length > 0 && formattedContents[0].role === 'model') {
       formattedContents.shift();
     }
 
-    // Build the user parts for this turn
     const userParts: Array<{ text?: string; inlineData?: { mimeType: string; data: string } }> = [];
-
-    if (slicedPdfResult) {
-      // Send the high-purity ~300KB slice directly to Gemini
-      userParts.push({
-        inlineData: {
-          mimeType: 'application/pdf',
-          data: slicedPdfResult.buffer.toString('base64'),
-        },
-      });
+    if (context.kind === 'pdf') {
+      userParts.push({ inlineData: { mimeType: 'application/pdf', data: context.base64 } });
       userParts.push({
         text: `【学术推演任务】：
-上述所附 PDF 为《${routingDecision?.bookName}》中经智能图书管理员精准切出的核心章节（第 ${slicedPdfResult.pageRange[0]} 至 ${slicedPdfResult.pageRange[1]} 页，高纯度素材）。
+上述所附 PDF 为《${decision?.bookName}》中精准切出的核心章节（第 ${context.pageRange[0]} 至 ${context.pageRange[1]} 页）。
 请仔细精读切片中的定理叙述与推导步骤，针对学生的以下提问进行详尽、权威、工科级的学术解答与 LaTeX 推导演绎：
 
 ${prompt}`,
@@ -1158,49 +1330,43 @@ ${prompt}`,
     } else {
       userParts.push({ text: prompt });
     }
-
     formattedContents.push({ role: 'user', parts: userParts });
 
-    let responseStream: any;
-    if (cachedContent && typeof cachedContent === 'string' && cachedContent.startsWith('cachedContents/')) {
-      responseStream = await ai.models.generateContentStream({
-        model: targetModel,
-        contents: formattedContents,
-        config: {
-          cachedContent: cachedContent.trim(),
-        },
-      });
-    } else {
-      responseStream = await ai.models.generateContentStream({
-        model: targetModel,
-        contents: formattedContents,
-        config: {
-          systemInstruction: DEFAULT_SYSTEM_INSTRUCTION,
-        },
-      });
-    }
+    const useCache =
+      typeof cachedContent === 'string' && cachedContent.startsWith('cachedContents/');
+    const responseStream = await ai.models.generateContentStream({
+      model: activeModel,
+      contents: formattedContents,
+      config: useCache
+        ? { cachedContent: cachedContent.trim(), abortSignal: channel.aborter.signal }
+        : { systemInstruction: DEFAULT_SYSTEM_INSTRUCTION, abortSignal: channel.aborter.signal },
+    });
 
+    let produced = false;
     for await (const chunk of responseStream) {
+      if (channel.isClosed) return;
       if (chunk.text) {
-        res.write(`data: ${JSON.stringify({ text: chunk.text })}\n\n`);
+        produced = true;
+        channel.send({ text: chunk.text });
       }
     }
 
-    const elapsedMs = Date.now() - startTime;
-    res.write(
-      `data: ${JSON.stringify({
-        done: true,
-        responseTimeMs: elapsedMs,
-        routing: routingDecision,
-      })}\n\n`
-    );
-    res.end();
+    if (!produced) {
+      channel.fail({
+        code: 'upstream',
+        message: '模型返回了空响应，未生成任何内容。',
+        hint: '内容可能被安全策略拦截，请调整提问方式或更换模型后重试。',
+      });
+      return;
+    }
+
+    channel.end({ done: true, responseTimeMs: Date.now() - startTime, routing: decision });
   } catch (err: any) {
-    console.error('Gemini API Error:', err);
-    res.write(`data: ${JSON.stringify({ error: err?.message || '调用 Gemini API 发生错误' })}\n\n`);
-    res.end();
+    console.error('[chat] unhandled failure:', err);
+    channel.fail(classifyThrownFailure(err));
   }
 });
+
 
 // Global Express error handler (catches MulterError and avoids connection drops)
 app.use((err: any, req: Request, res: Response, next: any) => {
