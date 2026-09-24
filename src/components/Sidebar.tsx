@@ -349,7 +349,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
               </button>
             </div>
             <p className="text-[11px] text-slate-400 leading-tight">
-              直连 Google 官方端点，支持整书 Context Caching 固化。
+              直连 Google 官方端点，章节切片以原生 PDF 形式送达。
             </p>
           </div>
         ) : (

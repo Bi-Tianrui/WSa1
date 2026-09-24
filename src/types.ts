@@ -24,6 +24,12 @@ export interface ScholarRouting {
   endPage?: number;
   rationale?: string;
   label?: string;
+  /** Whether routing came from the model or the local keyword fallback. */
+  source?: 'model' | 'keyword';
+  /** Estimated tokens this slice actually costs. */
+  contextTokens?: number;
+  /** Which form the excerpt was sent in for this provider. */
+  payload?: 'pdf' | 'text';
 }
 
 export interface ChatMessage {
@@ -34,24 +40,13 @@ export interface ChatMessage {
   reasoning?: string;
   bookCitation?: string;
   routing?: ScholarRouting;
-  cacheHit?: boolean;
-  cacheHandle?: string;
   responseTimeMs?: number;
+  /** Textbook context tokens spent on this turn; 0 means none was sent. */
+  contextTokens?: number;
   isError?: boolean;
   errorHint?: string;
   notices?: StreamNotice[];
   stage?: string;
-}
-
-export interface CachedContentMeta {
-  name: string; // e.g. "cachedContents/..."
-  displayName: string;
-  model: string;
-  expireTime: string; // ISO string
-  createTime?: string;
-  ttlSeconds: number;
-  tokenCount?: number;
-  sourceBookName?: string;
 }
 
 export interface MountedBook {
@@ -59,11 +54,9 @@ export interface MountedBook {
   name: string;
   sizeMb: number;
   pageCount: number;
-  tokensEstimate: number;
   status: 'ready' | 'processing';
   uploadTime: string;
   toc?: TocItem[];
-  cachedContentHandle?: string;
   tocSource?: TocSource;
   textLayer?: TextLayerQuality;
 }

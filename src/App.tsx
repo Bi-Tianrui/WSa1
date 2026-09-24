@@ -4,6 +4,7 @@ import { ChatArea } from './components/ChatArea';
 import { SourceCodeViewer } from './components/SourceCodeViewer';
 import { LatexStudio, DEFAULT_ACADEMIC_LATEX_TEMPLATE } from './components/LatexStudio';
 import { ChatMessage, MountedBook, ApiProviderType, ModelDiscoveryResponse, StreamNotice } from './types';
+import { markdownToLatexDocument } from './utils/markdownToLatex';
 import { Terminal, MessageSquare, FileCode, Sparkles, Cpu, RefreshCw, Globe, Zap, Check } from 'lucide-react';
 
 export default function App() {
@@ -127,7 +128,6 @@ export default function App() {
               name: b.name,
               sizeMb: b.sizeMb,
               pageCount: b.pageCount || 100,
-              tokensEstimate: Math.round((b.pageCount || 100) * 800),
               status: 'ready' as const,
               uploadTime: b.uploadTime || '刚刚',
               toc: b.toc || [],
@@ -183,108 +183,9 @@ export default function App() {
     localStorage.setItem('openai_api_key', key);
   };
 
-  // Convert assistant markdown reply to standard academic ctexart format
-  const convertMarkdownToAcademicLatex = (markdownText: string): string => {
-    const lines = markdownText.trim().split('\n');
-    const texBody: string[] = [];
-    let inTable = false;
-    let tableLines: string[] = [];
-
-    const flushTable = (tbl: string[]) => {
-      if (!tbl || tbl.length < 2) return '';
-      const header = tbl[0]
-        .trim()
-        .replace(/^\|/, '')
-        .replace(/\|$/, '')
-        .split('|')
-        .map((c) => c.trim());
-      const cols = header.length;
-      const colAlign = 'c'.repeat(cols);
-      const res: string[] = [
-        '\\begin{table}[htbp]',
-        '\\centering',
-        `\\begin{tabular}{${colAlign}}`,
-        '\\toprule',
-        header.join(' & ') + ' \\\\',
-        '\\midrule',
-      ];
-      for (let r = 2; r < tbl.length; r++) {
-        const cells = tbl[r]
-          .trim()
-          .replace(/^\|/, '')
-          .replace(/\|$/, '')
-          .split('|')
-          .map((c) => c.trim());
-        if (cells.length === cols) {
-          res.push(cells.join(' & ') + ' \\\\');
-        }
-      }
-      res.push('\\bottomrule', '\\end{tabular}', '\\end{table}');
-      return res.join('\n');
-    };
-
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i].trim();
-      if (line.startsWith('|') && line.endsWith('|')) {
-        inTable = true;
-        tableLines.push(line);
-        continue;
-      } else if (inTable) {
-        inTable = false;
-        texBody.push(flushTable(tableLines));
-        tableLines = [];
-      }
-
-      if (line.startsWith('### ')) {
-        texBody.push(`\\subsubsection*{${line.slice(4)}}`);
-      } else if (line.startsWith('## ')) {
-        texBody.push(`\\subsection*{${line.slice(3)}}`);
-      } else if (line.startsWith('# ')) {
-        texBody.push(`\\section*{${line.slice(2)}}`);
-      } else if (line.startsWith('- ') || line.startsWith('* ')) {
-        texBody.push(`\\item ${line.slice(2)}`);
-      } else if (line.startsWith('> ')) {
-        texBody.push(`\\begin{quote}\n\\small ${line.slice(2)}\n\\end{quote}`);
-      } else {
-        texBody.push(line);
-      }
-    }
-
-    if (inTable && tableLines.length > 0) {
-      texBody.push(flushTable(tableLines));
-    }
-
-    let raw = texBody.join('\n');
-    raw = raw.replace(/\*\*(.*?)\*\*/g, '\\textbf{$1}');
-    raw = raw.replace(/📖 出处：(.*?)(?=\n|$)/g, '\\textcolor{blue}{\\small \\textbf{出处：}$1}');
-
-    return `\\documentclass[11pt,a4paper]{ctexart}
-\\usepackage{amsmath,amssymb,amsfonts,amsthm}
-\\usepackage{geometry}
-\\geometry{left=2.5cm,right=2.5cm,top=2.5cm,bottom=2.5cm}
-\\usepackage{booktabs}
-\\usepackage{hyperref}
-\\usepackage{xcolor}
-\\usepackage{fancyhdr}
-\\pagestyle{fancy}
-\\fancyhf{}
-\\fancyhead[L]{\\small\\textcolor{gray}{工科教材智能伴读学术推演笔记}}
-\\fancyhead[R]{\\small\\textcolor{gray}{\\thepage}}
-
-\\title{\\textbf{\\LARGE 理工科教材学术定理推演与伴读笔记}}
-\\author{\\large 工科教材伴读研学室}
-\\date{\\today}
-
-\\begin{document}
-\\maketitle
-
-${raw}
-
-\\end{document}`;
-  };
 
   const handleImportToLatex = (content: string) => {
-    const formattedCode = convertMarkdownToAcademicLatex(content);
+    const formattedCode = markdownToLatexDocument(content);
     setLatexCode(formattedCode);
     setActiveView('latex');
     setHasImportedLatex(true);
@@ -450,13 +351,14 @@ ${raw}
           if (data.routing) {
             patchAssistant({
               routing: data.routing,
+              contextTokens: data.routing.contextTokens,
               bookCitation:
                 data.routing.label ||
                 `《${data.routing.bookName}》${data.routing.chapterTitle} (P${data.routing.startPage} - P${data.routing.endPage})`,
             });
           }
-          if (data.cacheHit) {
-            patchAssistant({ cacheHit: true, cacheHandle: data.cacheHandle });
+          if (typeof data.contextTokens === 'number') {
+            patchAssistant({ contextTokens: data.contextTokens });
           }
           if (data.reasoning) {
             accumulatedReasoning += data.reasoning;
