@@ -12,8 +12,9 @@ import {
   AlertCircle,
   HelpCircle,
   Clock,
-  Zap,
-  FileCode
+  FileCode,
+  Info,
+  Square
 } from 'lucide-react';
 import { ChatMessage, MountedBook, GeminiModelType } from '../types';
 import { FormattedMathContent } from '../utils/latexParser';
@@ -24,6 +25,7 @@ interface ChatAreaProps {
   selectedModel: GeminiModelType;
   isStreaming: boolean;
   onSendMessage: (text: string) => void;
+  onStopStreaming?: () => void;
   apiKey: string;
   onImportToLatex?: (content: string) => void;
 }
@@ -34,6 +36,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
   selectedModel,
   isStreaming,
   onSendMessage,
+  onStopStreaming,
   apiKey,
   onImportToLatex,
 }) => {
@@ -68,7 +71,11 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
     });
   };
 
-  const totalTokens = mountedBooks.reduce((acc, b) => acc + b.tokensEstimate, 0);
+  // Mounting a book costs nothing: only the slice sent for the latest question does.
+  // Showing the whole book's size here would misrepresent the "read like a human" flow.
+  const lastContextTokens = [...messages]
+    .reverse()
+    .find((m) => m.role === 'assistant' && typeof m.contextTokens === 'number')?.contextTokens;
 
   return (
     <main className="flex-1 flex flex-col h-full bg-slate-50 relative overflow-hidden">
@@ -94,8 +101,13 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                     {mountedBooks.map((b) => `《${b.name.replace(/\.pdf$/i, '')}》`).join('、')}
                   </span>
                 </span>
-                <span className="text-slate-400 font-mono text-[11px] bg-slate-100 px-1.5 py-0.5 rounded shrink-0">
-                  ~{Math.round(totalTokens / 1000)}k 上下文
+                <span
+                  className="text-slate-500 font-mono text-[11px] bg-slate-100 px-1.5 py-0.5 rounded shrink-0"
+                  title="挂载教材不消耗上下文；仅提问时切出的章节才计入"
+                >
+                  {lastContextTokens
+                    ? `本轮切片 ~${Math.max(1, Math.round(lastContextTokens / 1000))}k Token`
+                    : '目录索引待命 · 0 Token'}
                 </span>
               </div>
             ) : (
@@ -217,29 +229,22 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                 ) : (
                   /* Assistant Message with LaTeX & Markdown rendering */
                   <div>
-                    {/* Header Badges: Citation & Cache Hit */}
+                    {/* Header badges: which chapter was read, and what it cost */}
                     <div className="flex flex-wrap items-center gap-1.5 mb-2">
-                      {msg.cacheHit && (
-                        <div className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-50 text-amber-800 text-[11px] border border-amber-300/80 font-mono font-medium shadow-2xs">
-                          <Zap className="w-3 h-3 fill-amber-500 text-amber-600" />
-                          <span>Context Cache 极速</span>
-                          {msg.responseTimeMs && (
-                            <span className="text-emerald-700 bg-emerald-100/80 px-1 rounded text-[10px] font-sans">
-                              {(msg.responseTimeMs / 1000).toFixed(2)}s
-                            </span>
-                          )}
-                        </div>
-                      )}
-
                       {msg.routing && msg.routing.matched && (
                         <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-blue-50/90 border border-blue-200 text-blue-900 text-xs font-sans shadow-2xs">
                           <BookMarked className="w-4 h-4 text-blue-600 shrink-0" />
                           <span className="font-semibold">
                             {msg.routing.label ||
-                              `📖 智能图书管理员已查阅目录并锁定：《${msg.routing.bookName}》${msg.routing.chapterTitle} (P${msg.routing.startPage} - P${msg.routing.endPage})`}
+                              `📖 已锁定：《${msg.routing.bookName}》${msg.routing.chapterTitle} (P${msg.routing.startPage} - P${msg.routing.endPage})`}
                           </span>
                           <span className="text-[10px] bg-blue-100/90 text-blue-700 px-1.5 py-0.5 rounded font-mono font-medium shrink-0">
-                            毫秒级切片 ~{msg.routing.endPage && msg.routing.startPage ? msg.routing.endPage - msg.routing.startPage + 1 : 20}页
+                            切片 {msg.routing.endPage && msg.routing.startPage
+                              ? msg.routing.endPage - msg.routing.startPage + 1
+                              : 0}
+                            页
+                            {msg.routing.payload === 'text' ? ' · 纯文本' : ' · 原生PDF'}
+                            {msg.contextTokens ? ` · ~${Math.max(1, Math.round(msg.contextTokens / 1000))}k Token` : ''}
                           </span>
                         </div>
                       )}
@@ -251,6 +256,29 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                         </div>
                       )}
                     </div>
+
+                    {/* Backend notices: scanned book, routing miss, degraded extraction */}
+                    {msg.notices && msg.notices.length > 0 && (
+                      <div className="mb-2.5 space-y-1.5">
+                        {msg.notices.map((notice, idx) => (
+                          <div
+                            key={idx}
+                            className={`flex items-start gap-2 px-2.5 py-2 rounded-lg text-[11px] leading-relaxed border ${
+                              notice.level === 'warn'
+                                ? 'bg-amber-50 border-amber-200 text-amber-900'
+                                : 'bg-slate-50 border-slate-200 text-slate-600'
+                            }`}
+                          >
+                            {notice.level === 'warn' ? (
+                              <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-px text-amber-600" />
+                            ) : (
+                              <Info className="w-3.5 h-3.5 shrink-0 mt-px text-slate-500" />
+                            )}
+                            <span>{notice.message}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
 
                     {/* DeepSeek Reasoning Content if available */}
                     {msg.reasoning && (
@@ -274,7 +302,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                           <div className="w-2 h-2 rounded-full bg-blue-500 animate-bounce [animation-delay:0.3s]"></div>
                         </div>
                         <span className="text-slate-500 font-medium">
-                          教授正在检索教材与推演 LaTeX 公式...
+                          {msg.stage || '教授正在检索教材与推演 LaTeX 公式...'}
                         </span>
                       </div>
                     ) : (
@@ -368,18 +396,29 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
               />
             </div>
 
-            <button
-              type="submit"
-              disabled={!inputText.trim() || isStreaming}
-              className={`p-3 rounded-xl flex items-center justify-center transition-all ${
-                inputText.trim() && !isStreaming
-                  ? 'bg-blue-600 hover:bg-blue-700 text-white shadow-xs cursor-pointer'
-                  : 'bg-slate-200 text-slate-400 cursor-not-allowed'
-              }`}
-              title="发送提问"
-            >
-              <Send className="w-4 h-4" />
-            </button>
+            {isStreaming && onStopStreaming ? (
+              <button
+                type="button"
+                onClick={onStopStreaming}
+                className="p-3 rounded-xl flex items-center justify-center bg-red-50 hover:bg-red-100 text-red-600 border border-red-200 transition-all cursor-pointer"
+                title="终止本轮生成"
+              >
+                <Square className="w-4 h-4 fill-current" />
+              </button>
+            ) : (
+              <button
+                type="submit"
+                disabled={!inputText.trim() || isStreaming}
+                className={`p-3 rounded-xl flex items-center justify-center transition-all ${
+                  inputText.trim() && !isStreaming
+                    ? 'bg-blue-600 hover:bg-blue-700 text-white shadow-xs cursor-pointer'
+                    : 'bg-slate-200 text-slate-400 cursor-not-allowed'
+                }`}
+                title="发送提问"
+              >
+                <Send className="w-4 h-4" />
+              </button>
+            )}
           </form>
 
           <div className="mt-2 text-center text-[11px] text-slate-400">

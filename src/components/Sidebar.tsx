@@ -349,7 +349,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
               </button>
             </div>
             <p className="text-[11px] text-slate-400 leading-tight">
-              直连 Google 官方端点，支持整书 Context Caching 固化。
+              直连 Google 官方端点，章节切片以原生 PDF 形式送达。
             </p>
           </div>
         ) : (
@@ -632,9 +632,22 @@ export const Sidebar: React.FC<SidebarProps> = ({
                         <span>•</span>
                         <span className="text-emerald-400 flex items-center gap-0.5">
                           <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 inline-block animate-pulse"></span>
-                          TOC大纲已索引
+                          {book.tocSource === 'bookmarks'
+                            ? '书签目录已索引'
+                            : book.tocSource === 'text-scan'
+                            ? '正文目录已识别'
+                            : 'TOC大纲已索引'}
                         </span>
                       </div>
+                      {book.textLayer === 'none' && (
+                        <div
+                          className="mt-1 text-[10px] text-amber-300/90 flex items-start gap-1 leading-snug"
+                          title="扫描版教材没有文字层，纯文本模型无法读取页面内容"
+                        >
+                          <AlertTriangle className="w-3 h-3 shrink-0 mt-px" />
+                          <span>扫描版（无文字层）· 建议用 Gemini 研读</span>
+                        </div>
+                      )}
                     </div>
                     <button
                       onClick={() => onRemoveBook(book.id)}

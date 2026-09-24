@@ -1,9 +1,10 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Sidebar } from './components/Sidebar';
 import { ChatArea } from './components/ChatArea';
 import { SourceCodeViewer } from './components/SourceCodeViewer';
 import { LatexStudio, DEFAULT_ACADEMIC_LATEX_TEMPLATE } from './components/LatexStudio';
-import { ChatMessage, MountedBook, ApiProviderType, ModelDiscoveryResponse } from './types';
+import { ChatMessage, MountedBook, ApiProviderType, ModelDiscoveryResponse, StreamNotice } from './types';
+import { markdownToLatexDocument } from './utils/markdownToLatex';
 import { Terminal, MessageSquare, FileCode, Sparkles, Cpu, RefreshCw, Globe, Zap, Check } from 'lucide-react';
 
 export default function App() {
@@ -53,6 +54,7 @@ export default function App() {
   const [isStreaming, setIsStreaming] = useState(false);
   const [latexCode, setLatexCode] = useState<string>(DEFAULT_ACADEMIC_LATEX_TEMPLATE);
   const [hasImportedLatex, setHasImportedLatex] = useState(false);
+  const abortRef = useRef<AbortController | null>(null);
 
   // Dynamic Model Discovery Execution
   const handleDiscoverModels = useCallback(
@@ -126,10 +128,11 @@ export default function App() {
               name: b.name,
               sizeMb: b.sizeMb,
               pageCount: b.pageCount || 100,
-              tokensEstimate: Math.round((b.pageCount || 100) * 800),
               status: 'ready' as const,
               uploadTime: b.uploadTime || '刚刚',
               toc: b.toc || [],
+              tocSource: b.tocSource,
+              textLayer: b.textLayer,
             }))
           );
         }
@@ -180,108 +183,9 @@ export default function App() {
     localStorage.setItem('openai_api_key', key);
   };
 
-  // Convert assistant markdown reply to standard academic ctexart format
-  const convertMarkdownToAcademicLatex = (markdownText: string): string => {
-    const lines = markdownText.trim().split('\n');
-    const texBody: string[] = [];
-    let inTable = false;
-    let tableLines: string[] = [];
-
-    const flushTable = (tbl: string[]) => {
-      if (!tbl || tbl.length < 2) return '';
-      const header = tbl[0]
-        .trim()
-        .replace(/^\|/, '')
-        .replace(/\|$/, '')
-        .split('|')
-        .map((c) => c.trim());
-      const cols = header.length;
-      const colAlign = 'c'.repeat(cols);
-      const res: string[] = [
-        '\\begin{table}[htbp]',
-        '\\centering',
-        `\\begin{tabular}{${colAlign}}`,
-        '\\toprule',
-        header.join(' & ') + ' \\\\',
-        '\\midrule',
-      ];
-      for (let r = 2; r < tbl.length; r++) {
-        const cells = tbl[r]
-          .trim()
-          .replace(/^\|/, '')
-          .replace(/\|$/, '')
-          .split('|')
-          .map((c) => c.trim());
-        if (cells.length === cols) {
-          res.push(cells.join(' & ') + ' \\\\');
-        }
-      }
-      res.push('\\bottomrule', '\\end{tabular}', '\\end{table}');
-      return res.join('\n');
-    };
-
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i].trim();
-      if (line.startsWith('|') && line.endsWith('|')) {
-        inTable = true;
-        tableLines.push(line);
-        continue;
-      } else if (inTable) {
-        inTable = false;
-        texBody.push(flushTable(tableLines));
-        tableLines = [];
-      }
-
-      if (line.startsWith('### ')) {
-        texBody.push(`\\subsubsection*{${line.slice(4)}}`);
-      } else if (line.startsWith('## ')) {
-        texBody.push(`\\subsection*{${line.slice(3)}}`);
-      } else if (line.startsWith('# ')) {
-        texBody.push(`\\section*{${line.slice(2)}}`);
-      } else if (line.startsWith('- ') || line.startsWith('* ')) {
-        texBody.push(`\\item ${line.slice(2)}`);
-      } else if (line.startsWith('> ')) {
-        texBody.push(`\\begin{quote}\n\\small ${line.slice(2)}\n\\end{quote}`);
-      } else {
-        texBody.push(line);
-      }
-    }
-
-    if (inTable && tableLines.length > 0) {
-      texBody.push(flushTable(tableLines));
-    }
-
-    let raw = texBody.join('\n');
-    raw = raw.replace(/\*\*(.*?)\*\*/g, '\\textbf{$1}');
-    raw = raw.replace(/📖 出处：(.*?)(?=\n|$)/g, '\\textcolor{blue}{\\small \\textbf{出处：}$1}');
-
-    return `\\documentclass[11pt,a4paper]{ctexart}
-\\usepackage{amsmath,amssymb,amsfonts,amsthm}
-\\usepackage{geometry}
-\\geometry{left=2.5cm,right=2.5cm,top=2.5cm,bottom=2.5cm}
-\\usepackage{booktabs}
-\\usepackage{hyperref}
-\\usepackage{xcolor}
-\\usepackage{fancyhdr}
-\\pagestyle{fancy}
-\\fancyhf{}
-\\fancyhead[L]{\\small\\textcolor{gray}{工科教材智能伴读学术推演笔记}}
-\\fancyhead[R]{\\small\\textcolor{gray}{\\thepage}}
-
-\\title{\\textbf{\\LARGE 理工科教材学术定理推演与伴读笔记}}
-\\author{\\large 工科教材伴读研学室}
-\\date{\\today}
-
-\\begin{document}
-\\maketitle
-
-${raw}
-
-\\end{document}`;
-  };
 
   const handleImportToLatex = (content: string) => {
-    const formattedCode = convertMarkdownToAcademicLatex(content);
+    const formattedCode = markdownToLatexDocument(content);
     setLatexCode(formattedCode);
     setActiveView('latex');
     setHasImportedLatex(true);
@@ -313,6 +217,29 @@ ${raw}
     setMessages([]);
   };
 
+  // A healthy stream emits a heartbeat every 15s, so silence this long means the
+  // connection died somewhere upstream and the UI must stop waiting on it.
+  const STREAM_IDLE_TIMEOUT_MS = 90_000;
+
+  const handleStopStreaming = () => {
+    abortRef.current?.abort(new DOMException('用户已终止本轮生成', 'AbortError'));
+  };
+
+  /** Reads one chunk, rejecting if the stream goes silent past the idle timeout. */
+  const readWithIdleTimeout = async (
+    reader: ReadableStreamDefaultReader<Uint8Array>
+  ): Promise<ReadableStreamReadResult<Uint8Array>> => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const idle = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error('STREAM_IDLE')), STREAM_IDLE_TIMEOUT_MS);
+    });
+    try {
+      return await Promise.race([reader.read(), idle]);
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+
   // Real Multi-Provider Unified SSE Streaming Chat
   const handleSendMessage = async (text: string) => {
     const userMsg: ChatMessage = {
@@ -337,10 +264,18 @@ ${raw}
 
     setMessages((prev) => [...prev, initialAssistantMsg]);
 
+    const controller = new AbortController();
+    abortRef.current = controller;
+
+    const patchAssistant = (patch: Partial<ChatMessage>) => {
+      setMessages((prev) => prev.map((msg) => (msg.id === assistantId ? { ...msg, ...patch } : msg)));
+    };
+
     try {
       const activeKey = provider === 'gemini' ? geminiApiKey : openaiApiKey;
       const response = await fetch('/api/chat', {
         method: 'POST',
+        signal: controller.signal,
         headers: {
           'Content-Type': 'application/json',
           'x-api-provider': provider,
@@ -374,9 +309,11 @@ ${raw}
       let buffer = '';
       let accumulatedContent = '';
       let accumulatedReasoning = '';
+      const notices: StreamNotice[] = [];
+      let serverError: { message: string; hint?: string } | null = null;
 
-      while (true) {
-        const { done, value } = await reader.read();
+      streaming: while (true) {
+        const { done, value } = await readWithIdleTimeout(reader);
         if (done) break;
 
         buffer += decoder.decode(value, { stream: true });
@@ -385,122 +322,121 @@ ${raw}
 
         for (const line of lines) {
           const trimmed = line.trim();
+          // Lines beginning with ':' are keep-alive comment frames.
           if (!trimmed.startsWith('data: ')) continue;
           const jsonStr = trimmed.slice(6).trim();
           if (!jsonStr) continue;
 
+          let data: any;
           try {
-            const data = JSON.parse(jsonStr);
-            if (data.error) {
-              throw new Error(data.error);
-            }
-            if (data.routing) {
-              setMessages((prev) =>
-                prev.map((msg) =>
-                  msg.id === assistantId
-                    ? {
-                        ...msg,
-                        routing: data.routing,
-                        bookCitation:
-                          data.routing.label ||
-                          `《${data.routing.bookName}》${data.routing.chapterTitle} (P${data.routing.startPage} - P${data.routing.endPage})`,
-                      }
-                    : msg
-                )
-              );
-            }
-            if (data.cacheHit) {
-              setMessages((prev) =>
-                prev.map((msg) =>
-                  msg.id === assistantId
-                    ? {
-                        ...msg,
-                        cacheHit: true,
-                        cacheHandle: data.cacheHandle || msg.cacheHandle,
-                      }
-                    : msg
-                )
-              );
-            }
-            if (data.reasoning) {
-              accumulatedReasoning += data.reasoning;
-              setMessages((prev) =>
-                prev.map((msg) =>
-                  msg.id === assistantId
-                    ? {
-                        ...msg,
-                        reasoning: accumulatedReasoning,
-                        responseTimeMs: Math.round(performance.now() - startTime),
-                      }
-                    : msg
-                )
-              );
-            }
-            if (data.text) {
-              accumulatedContent += data.text;
-              setMessages((prev) =>
-                prev.map((msg) =>
-                  msg.id === assistantId
-                    ? {
-                        ...msg,
-                        content: accumulatedContent,
-                        reasoning: accumulatedReasoning || undefined,
-                        responseTimeMs: Math.round(performance.now() - startTime),
-                      }
-                    : msg
-                )
-              );
-            }
-          } catch (jsonErr: any) {
-            if (jsonErr?.message && !jsonErr.message.includes('Unexpected end of JSON')) {
-              throw jsonErr;
-            }
+            data = JSON.parse(jsonStr);
+          } catch {
+            continue;
+          }
+
+          if (data.error) {
+            serverError = { message: String(data.error), hint: data.hint ? String(data.hint) : undefined };
+            break streaming;
+          }
+          if (data.stage) {
+            patchAssistant({ stage: String(data.stage) });
+          }
+          if (data.notice?.message) {
+            notices.push({
+              level: data.notice.level === 'warn' ? 'warn' : 'info',
+              message: String(data.notice.message),
+            });
+            patchAssistant({ notices: [...notices] });
+          }
+          if (data.routing) {
+            patchAssistant({
+              routing: data.routing,
+              contextTokens: data.routing.contextTokens,
+              bookCitation:
+                data.routing.label ||
+                `《${data.routing.bookName}》${data.routing.chapterTitle} (P${data.routing.startPage} - P${data.routing.endPage})`,
+            });
+          }
+          if (typeof data.contextTokens === 'number') {
+            patchAssistant({ contextTokens: data.contextTokens });
+          }
+          if (data.reasoning) {
+            accumulatedReasoning += data.reasoning;
+            patchAssistant({
+              reasoning: accumulatedReasoning,
+              stage: undefined,
+              responseTimeMs: Math.round(performance.now() - startTime),
+            });
+          }
+          if (data.text) {
+            accumulatedContent += data.text;
+            patchAssistant({
+              content: accumulatedContent,
+              reasoning: accumulatedReasoning || undefined,
+              stage: undefined,
+              responseTimeMs: Math.round(performance.now() - startTime),
+            });
           }
         }
       }
 
+      try {
+        await reader.cancel();
+      } catch {}
+
       const totalResponseTimeMs = Math.round(performance.now() - startTime);
 
-      if (!accumulatedContent && !accumulatedReasoning) {
-        setMessages((prev) =>
-          prev.map((msg) =>
-            msg.id === assistantId
-              ? {
-                  ...msg,
-                  content: '（模型暂未返回文本，请检查 API Key、Base URL 或网络连接后重试）',
-                  responseTimeMs: totalResponseTimeMs,
-                }
-              : msg
-          )
-        );
+      if (serverError) {
+        patchAssistant({
+          content:
+            accumulatedContent ||
+            `❌ **请求出错**：${serverError.message}${serverError.hint ? `\n\n💡 ${serverError.hint}` : ''}`,
+          errorHint: serverError.hint,
+          isError: !accumulatedContent,
+          stage: undefined,
+          responseTimeMs: totalResponseTimeMs,
+        });
+      } else if (!accumulatedContent && !accumulatedReasoning) {
+        patchAssistant({
+          content: '❌ **模型未返回任何内容**。\n\n💡 请检查 API Key、Base URL 与所选模型是否可用，然后重试。',
+          isError: true,
+          stage: undefined,
+          responseTimeMs: totalResponseTimeMs,
+        });
       } else {
-        setMessages((prev) =>
-          prev.map((msg) =>
-            msg.id === assistantId
-              ? {
-                  ...msg,
-                  content: accumulatedContent,
-                  reasoning: accumulatedReasoning || undefined,
-                  responseTimeMs: totalResponseTimeMs,
-                }
-              : msg
-          )
-        );
+        patchAssistant({
+          content: accumulatedContent,
+          reasoning: accumulatedReasoning || undefined,
+          stage: undefined,
+          responseTimeMs: totalResponseTimeMs,
+        });
       }
     } catch (err: any) {
       console.error('API Call Error:', err);
-      const errText = err?.message || '调用 API 时发生未知错误';
+
+      const isUserAbort = err?.name === 'AbortError';
+      const isIdleTimeout = err?.message === 'STREAM_IDLE';
+
+      const failureText = isUserAbort
+        ? '⏹️ **已终止本轮生成**。'
+        : isIdleTimeout
+        ? `⌛ **连接已静默超过 ${STREAM_IDLE_TIMEOUT_MS / 1000} 秒，判定为断流并已自动断开**。\n\n💡 模型前置思考过久或网络中断，请重试，或改用响应更快的模型。`
+        : `❌ **请求出错**：${err?.message || '调用 API 时发生未知错误'}\n\n💡 请检查左侧的 API Key、Base URL 与网络连接后重试。`;
+
       setMessages((prev) =>
         prev.map((msg) =>
           msg.id === assistantId
             ? {
                 ...msg,
-                content: `❌ **请求出错**: ${errText}\n\n*请检查左侧边栏的 API Key、Base URL 是否有效，或检查网络连接。*`,
+                content: msg.content ? `${msg.content}\n\n---\n${failureText}` : failureText,
+                isError: !msg.content,
+                stage: undefined,
               }
             : msg
         )
       );
     } finally {
+      abortRef.current = null;
       setIsStreaming(false);
     }
   };
@@ -637,6 +573,7 @@ ${raw}
               selectedModel={selectedModel}
               isStreaming={isStreaming}
               onSendMessage={handleSendMessage}
+              onStopStreaming={handleStopStreaming}
               apiKey={geminiApiKey}
               onImportToLatex={handleImportToLatex}
             />
