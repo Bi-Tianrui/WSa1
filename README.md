@@ -1,70 +1,122 @@
-# WSa1 (理工科教材伴读助手)
+# WSa1：理工科教材伴读与学术排版助手
 
-这是一个由理工科学生在学习过程中探索搭建的实验性辅助工具。
-最初的出发点，是希望解决传统 AI 工具难以同时阅读多本厚教材、公式推导容易断流、以及笔记难以直接导出为规范学术格式的痛点。
+WSa1 是一个面向数理与工程学科的教材伴读 Web 应用。用户可以上传 PDF 教材、按目录定位内容，并通过 Google Gemini 或 OpenAI 兼容接口进行问答；回答还可以转换为 LaTeX 笔记并在工作台中预览、导出 PDF。
 
-> **⚠️ 现状说明 / 风险提示**：
-> 本项目目前仅为一个非常早期的**粗糙原型（WIP / Prototype）**。
-> 整体链路刚刚打通，尚未经过充分的测试与工业级验证，**代码中仍存在较多已知与未知的 Bug**（如上传稳定性问题、网络断连处理等），仅供个人学习、折腾与交流参考，请勿用于关键生产环境。
-## 💡 探索的核心思路
+## 当前架构
 
-为了在有限的硬件和上下文条件下阅读多本教材，本项目尝试了以下折中设计：
+项目当前的主应用是 React + TypeScript 前端和 Express + TypeScript 后端，开发时由同一个 `server.ts` 进程提供：
 
-1. **目录索引与局部切片（尝试模拟人类翻书）**：
-   - 放弃将动辄数十兆的整本教材一次性塞入单次请求的蛮力做法；
-   - 在书籍入库时尝试提取其目录大纲（TOC）；提问时先依据目录由模型推测相关章节，再通过本地工具（`pdf-lib`）切出目标起止页码的微型片段送入模型，以规避网络载荷过大与上下文过载。
-
-2. **动态模型探测（减少硬编码）**：
-   - 不在代码中强行写死特定模型代号，尝试通过接口动态拉取服务商（Google / OpenAI 兼容端点如 DeepSeek）当前可用的模型列表，供用户自行选择。
-
-3. **学术格式对接尝试**：
-   - 尝试在前端将回答中的公式与表格转译为 `ctexart` 论文模板；
-   - 若本地环境安装了 `xelatex`，可尝试调用编译并展示简易的矢量 PDF 预览，方便后续整理笔记。
-## 🛠️ 本地运行指南 (测试环境: Ubuntu Linux)
-
-本项目目前主要在 Ubuntu Linux 环境下进行开发与测试。
-
-### 1. 系统基础环境准备
-运行本项目需要 Node.js 环境；若需启用本地真正的 PDF 编译，还需要安装系统级 LaTeX 引擎：
-
-```bash
-# 安装 Node.js 与包管理工具
-sudo apt update && sudo apt install -y nodejs npm
-
-# (可选) 若需本地实时编译 PDF，需安装 XeLaTeX 及中文支持
-sudo apt install -y texlive-xetex texlive-lang-chinese texlive-latex-extra
+```text
+浏览器
+  │
+  ├── React / Vite 前端（聊天、教材管理、LaTeX 工作台）
+  │       └── /api/* 同源请求
+  │
+  └── Express API（端口 3000）
+          ├── PDF 上传、页数识别和目录提取
+          ├── 教材文件与目录元数据持久化到 uploads/books/
+          ├── Gemini / OpenAI 兼容协议模型调用
+          └── XeLaTeX 编译状态检测与服务端编译
 ```
-### 2.获取代码与安装依赖
-```bash
-# 克隆仓库
-git clone https://github.com/Bi-Tianrui/WSa1.git
-cd WSa1
 
-# 安装前端与服务端依赖 (国内网络环境建议使用镜像源并加上 --legacy-peer-deps 规避版本冲突)
-npm install --legacy-peer-deps --registry=https://registry.npmmirror.com
-```
-### 3.本地启动
+教材上传后，服务端使用 `pdf-lib` 和 `pdf-parse` 读取页数及书签目录；没有可用书签时，会从前若干页尝试解析目录，最后按页数生成分段目录。大文件会由前端切成 6 MB 分块上传，服务端再合并。
+
+前端支持两类模型服务：
+
+- **Google Gemini**：使用 Gemini API，默认从 `GEMINI_API_KEY` 或浏览器设置中读取密钥。
+- **OpenAI 兼容协议**：默认地址为 `https://api.deepseek.com/v1`，也可以填写其他兼容 `/models` 和 `/chat/completions` 的服务。
+
+## 环境要求
+
+- Node.js 18 或更高版本，推荐使用当前 LTS 版本
+- npm
+- 可选：XeLaTeX 及中文 LaTeX 宏包。未安装时，聊天、公式渲染和源码导出仍可用，LaTeX 工作台会使用浏览器端备用 PDF 引擎
+- 至少一个可用的 Gemini 或 OpenAI 兼容协议 API Key
+
+Python 不是当前 React/Express 主应用的启动依赖。仓库中的 `app.py` 和 `run.sh` 是旧版 Streamlit 实验入口，默认启动步骤不使用它们。
+
+## 开发环境启动
+
+在项目根目录执行。当前依赖树中的 `vite@8.3.0` 与 `esbuild@0.25.x` 存在 peer 依赖冲突，因此需要使用 `--legacy-peer-deps` 安装：
+
 ```bash
+npm install --legacy-peer-deps
 npm run dev
 ```
-启动成功后，浏览器访问终端中提示的本地地址（默认通常为 http://localhost:3000）。
-首次使用需在界面中填入您自己的 API Key。
-## ⚠️ 已知问题与局限性 (Known Issues)
 
-由于作者水平有限且开发周期仓促，当前版本存在诸多明显的工程缺陷与待优化项，在此开诚布公列出：
+启动成功后访问：<http://localhost:3000>
 
-1. **大文件与多书籍上传的鲁棒性不足**：
-   - 面对动辄数十兆、带出版商权限保护或结构特殊的 PDF 时，后端的解析与切片逻辑仍有概率报错中断；
-   - 批量多文件上传的并发与状态管理较为脆弱，建议单本逐步挂载。
+`npm run dev` 会启动 `server.ts`。它内部创建 Vite 开发中间件，同时提供 Express API，因此开发时不需要再单独执行 `npm run preview` 或启动第二个前端服务。
 
-2. **长连接网络抖动容易引发中断**：
-   - 长篇定理推导耗时较长，若网络环境（或外部代理）不够稳定，易在流式传输末尾因超时引发 503 等异常，前端的断点续传与内容保全机制仍较粗糙。
+### 配置 API Key
 
-3. **老旧扫描版教材的语义解析盲区**：
-   - 目前依赖 PDF 内部原生书签或简单的正文规则匹配；对于纯图片、无文字层的低质量旧扫描教材，尚不具备本地 OCR 能力，大纲定位会退化为固定页数的生硬切块。
+可以在项目根目录创建 `.env`，配置服务端默认使用的 Gemini Key：
 
-4. **非多模态模型（纯文本模型）的切片文本抽取有待完善**：
-   - 目前针对纯文本大模型（如 DeepSeek 等）的 PDF 切片转纯文本模块仍存在格式兼容性缺陷，提取不够稳定。
+```dotenv
+GEMINI_API_KEY=your_gemini_api_key
+```
 
-5. **双引擎代码略显臃肿杂乱**：
-   - 仓库内同时保留了初期的 Python 单文件试验版（`app.py` / `run.sh`）与后期的 TypeScript 全栈版，前后端依赖较为冗余，架构有待进一步解耦与瘦身。
+也可以直接在页面左侧配置面板中填写 Gemini Key，或填写 OpenAI 兼容服务的 Base URL、API Key 和模型。浏览器端配置会保存到当前浏览器的 `localStorage`。不要把真实密钥提交到 Git 仓库。
+
+启动后可以用以下接口确认后端是否正常：
+
+```bash
+curl http://localhost:3000/api/health
+```
+
+返回 JSON 中的 `status` 为 `ok` 即表示 Express 服务已启动；`hasEnvKey` 只反映服务端环境变量中是否存在 `GEMINI_API_KEY`，不代表浏览器中填写的密钥状态。
+
+## 生产构建与启动
+
+生产模式必须先构建前端和后端，再以 `NODE_ENV=production` 启动编译后的服务：
+
+```bash
+npm install --legacy-peer-deps
+npm run build
+NODE_ENV=production npm start
+```
+
+启动后访问 <http://localhost:3000>。生产模式下，Express 从 `dist/` 提供静态前端文件，并继续提供 `/api/*` 接口。服务监听地址由代码固定为 `0.0.0.0`，端口固定为 `3000`。
+
+注意：生产启动命令中的 `NODE_ENV=production` 不可省略，否则编译后的服务仍会尝试创建 Vite 开发服务器。`npm run preview` 只用于预览 Vite 静态产物，不提供本项目的 Express API，因此不能代替 `npm start`。
+
+## XeLaTeX（可选）
+
+只有需要服务端原生 XeLaTeX 编译时才需要安装。Ubuntu/Debian 可执行：
+
+```bash
+sudo apt update
+sudo apt install -y texlive-xetex texlive-lang-chinese texlive-latex-extra
+```
+
+应用会通过 `GET /api/latex/status` 检测 `xelatex`。安装后重启 Node 服务，再在 LaTeX 工作台点击编译。
+
+## 数据与文件
+
+- `uploads/books/`：上传的 PDF、目录元数据和大文件上传临时分块
+- `dist/`：`npm run build` 生成的生产构建产物
+- `.env`：本地环境变量文件，不应提交到仓库
+
+教材数据保存在本地文件系统，不会自动迁移到数据库。删除教材时，应用会同时删除对应 PDF 和目录元数据。
+
+## 常用命令
+
+```bash
+npm run dev                    # 开发模式：Express + Vite，端口 3000
+npm run lint                   # TypeScript 类型检查
+npm run build                  # 构建 Vite 前端和 Express 服务端
+NODE_ENV=production npm start  # 启动 dist/server.cjs
+npm run clean                  # 删除 dist 和 server.js
+```
+
+## 目录概览
+
+```text
+server.ts                 Express API、模型调用和生产静态文件服务
+server/pdfEngine.ts       PDF 页数、目录解析和教材文件管理
+src/App.tsx               React 应用状态与主要页面编排
+src/components/           侧边栏、聊天区、LaTeX 工作台和源码查看器
+src/utils/latexParser.tsx Markdown/LaTeX 解析辅助逻辑
+package.json              Node.js 依赖与启动脚本
+app.py / run.sh           旧版 Streamlit 入口，不是当前主应用启动方式
+```

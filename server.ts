@@ -3,7 +3,6 @@ import path from 'path';
 import fs from 'fs';
 import os from 'os';
 import { spawnSync } from 'child_process';
-import { fileURLToPath } from 'url';
 import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI } from '@google/genai';
 import { GoogleAICacheManager } from '@google/generative-ai/server';
@@ -22,9 +21,6 @@ import {
 } from './server/pdfEngine';
 
 dotenv.config();
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
 
 const PORT = 3000;
 const app = express();
