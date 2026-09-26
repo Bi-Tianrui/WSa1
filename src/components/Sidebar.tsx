@@ -72,6 +72,17 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const [isDragging, setIsDragging] = useState<boolean>(false);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
 
+  /**
+   * Indexing a scanned textbook may require the vision model to read its printed
+   * contents page, so the active provider travels with the upload.
+   */
+  const appendVisionCredentials = (formData: FormData) => {
+    formData.append('provider', provider);
+    formData.append('model', selectedModel);
+    formData.append('apiKey', provider === 'gemini' ? geminiApiKey : openaiApiKey);
+    formData.append('baseUrl', openaiBaseUrl);
+  };
+
   // Resilient PDF upload to /api/books/upload (automatically slices >15MB files into 6MB chunks to stay well under Cloud Run & proxy limits)
   const processPdfFile = async (file: File) => {
     if (!file.name.toLowerCase().endsWith('.pdf')) {
@@ -94,10 +105,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
       if (file.size <= CHUNK_THRESHOLD) {
         // Direct single-file upload for smaller textbooks
         setUploadProgress(40);
-        setUploadStatusText(`正在上传《${file.name}》并解析大纲...`);
+        setUploadStatusText(`正在上传《${file.name}》并解析大纲（扫描版需视觉识别目录，可能稍慢）...`);
         const formData = new FormData();
         formData.append('file', file);
         formData.append('clientFileName', file.name);
+        appendVisionCredentials(formData);
 
         let attempts = 0;
         let success = false;
@@ -163,6 +175,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
               formData.append('fileName', file.name);
               formData.append('fileSize', String(file.size));
               formData.append('file', chunkBlob, file.name);
+              appendVisionCredentials(formData);
 
               const res = await fetch('/api/books/upload', {
                 method: 'POST',
@@ -634,10 +647,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
                           </>
                         ) : null}
                         <span>•</span>
-                        {book.tocSource === 'none' ? (
-                          <span className="text-slate-400 flex items-center gap-0.5">
-                            <span className="w-1.5 h-1.5 rounded-full bg-slate-500 inline-block"></span>
-                            待视觉建立目录
+                        {book.tocSource === 'synthesized' ? (
+                          <span className="text-amber-300 flex items-center gap-0.5">
+                            <span className="w-1.5 h-1.5 rounded-full bg-amber-400 inline-block"></span>
+                            等距逻辑块
                           </span>
                         ) : (
                           <span className="text-emerald-400 flex items-center gap-0.5">
@@ -647,18 +660,18 @@ export const Sidebar: React.FC<SidebarProps> = ({
                               : book.tocSource === 'text-scan'
                               ? '正文目录已识别'
                               : book.tocSource === 'vision'
-                              ? '视觉直读目录已建立'
+                              ? '视觉识别目录已缓存'
                               : 'TOC大纲已索引'}
                           </span>
                         )}
                       </div>
-                      {book.tocSource === 'none' && (
+                      {book.tocSource === 'synthesized' && (
                         <div
-                          className="mt-1 text-[10px] text-slate-400 flex items-start gap-1 leading-snug"
-                          title="该教材没有可解析的书签或文字目录，首次提问时将由模型直接阅读其印刷目录页"
+                          className="mt-1 text-[10px] text-amber-300/90 flex items-start gap-1 leading-snug"
+                          title="既没有电子书签，也未能识别出印刷目录，已按每 30 页划分逻辑块；章节定位精度会下降"
                         >
-                          <Eye className="w-3 h-3 shrink-0 mt-px" />
-                          <span>无书签目录 · 首次提问时视觉直读</span>
+                          <AlertTriangle className="w-3 h-3 shrink-0 mt-px" />
+                          <span>未识别到目录 · 已按每 30 页分块</span>
                         </div>
                       )}
                     </div>

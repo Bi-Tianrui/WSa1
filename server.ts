@@ -19,10 +19,10 @@ import {
   saveBookMetadata,
 } from './server/pdf/storage';
 import { getProvider, normalizeProviderId, ProviderId } from './server/providers';
-import { ingestBook } from './server/pipeline/ingest';
+import { VisionContext, ingestBook } from './server/pipeline/ingest';
 import { pickRoutingModel, routeQuestion } from './server/pipeline/route';
 import { prepareExcerpt, streamAnswer } from './server/pipeline/answer';
-import { recoverOutlineWithVision } from './server/pipeline/visionIndex';
+import { needsDeferredVision, recoverOutlineWithVision } from './server/pipeline/visionIndex';
 
 dotenv.config();
 
@@ -177,10 +177,41 @@ function newBookId(): string {
 }
 
 function describeIngest(meta: BookMetadata): string {
-  if (meta.toc.length === 0) {
-    return `✅ 教材《${meta.name}》已载入（共 ${meta.pageCount} 页，未消耗任何 Token）；该书没有可解析的书签目录，将在首次提问时由模型视觉直读其印刷目录页`;
+  const scale = `共 ${meta.pageCount} 页，${meta.toc.length} 条大纲`;
+
+  switch (meta.tocSource) {
+    case 'vision':
+      return `✅ 教材《${meta.name}》无电子书签，已由多模态模型视觉识别印刷目录并永久缓存（${scale}）`;
+    case 'synthesized':
+      return `⚠️ 教材《${meta.name}》既无电子书签，也未能识别出印刷目录，已按每 30 页划分为逻辑块以保证可用（${scale}）`;
+    default:
+      return `✅ 教材《${meta.name}》已完成本地目录索引（${scale}，未消耗任何 Token）`;
   }
-  return `✅ 教材《${meta.name}》已完成本地目录索引（共 ${meta.pageCount} 页，${meta.toc.length} 条大纲，未消耗任何 Token）`;
+}
+
+/**
+ * Builds the vision context for ingest from whatever the client sent alongside the file.
+ *
+ * Returns null when no usable credentials arrived, in which case ingest stays offline
+ * and a scanned book falls back to page blocks until the first question.
+ */
+function visionContextFromRequest(body: any): VisionContext | null {
+  const providerId = normalizeProviderId(body?.provider);
+  const provider = getProvider(providerId);
+
+  const apiKey = String(
+    body?.apiKey || (providerId === 'gemini' ? process.env.GEMINI_API_KEY : '') || ''
+  ).trim();
+  if (!apiKey) return null;
+
+  const model = resolveDynamicModel(body?.model, providerId);
+  if (!model) return null;
+
+  return {
+    provider,
+    model,
+    credentials: { apiKey, baseUrl: String(body?.baseUrl || DEFAULT_OPENAI_BASE_URL).trim() },
+  };
 }
 
 /** Handles both single-shot and chunked uploads, then indexes the book locally. */
@@ -193,6 +224,7 @@ async function handleBookUpload(req: Request, res: Response): Promise<void> {
   const { uploadId, chunkIndex, totalChunks, fileName, fileSize, clientFileName } = req.body || {};
   const rawFileName = clientFileName || fileName || req.file.originalname || 'textbook.pdf';
   const safeName = decodeOriginalFileName(rawFileName);
+  const vision = visionContextFromRequest(req.body);
 
   // Mode A: chunked upload for large textbooks
   if (uploadId && chunkIndex !== undefined && totalChunks) {
@@ -228,7 +260,7 @@ async function handleBookUpload(req: Request, res: Response): Promise<void> {
         fs.rmSync(sessionDir, { recursive: true, force: true });
       } catch {}
 
-      const meta = await ingestBook(finalPath, safeName, fs.statSync(finalPath).size, bookId);
+      const meta = await ingestBook(finalPath, safeName, fs.statSync(finalPath).size, bookId, vision);
       saveBookMetadata(meta);
       res.json({ success: true, completed: true, book: { ...meta, status: 'ready' }, message: describeIngest(meta) });
     } catch (err: any) {
@@ -248,7 +280,7 @@ async function handleBookUpload(req: Request, res: Response): Promise<void> {
 
   try {
     fs.writeFileSync(savedPath, req.file.buffer);
-    const meta = await ingestBook(savedPath, safeName, req.file.size, bookId);
+    const meta = await ingestBook(savedPath, safeName, req.file.size, bookId, vision);
     saveBookMetadata(meta);
     res.json({ success: true, completed: true, book: { ...meta, status: 'ready' }, message: describeIngest(meta) });
   } catch (err: any) {
@@ -277,10 +309,10 @@ app.get('/api/books', async (req: Request, res: Response) => {
 
       meta.name = decodeOriginalFileName(meta.name);
 
-      // Older indexes are unusable in two ways: those written before destination-aware
-      // outline parsing point every chapter at page 1, and those marked 'synthesized'
-      // hold fabricated fixed-size chunks. Rebuild both rather than route against them.
-      if (!meta.tocSource || (meta.tocSource as string) === 'synthesized') {
+      // Indexes written before destination-aware outline parsing point every chapter at
+      // page 1. Rebuild those once; every other index, including a synthesized one, is a
+      // settled result and must not be recomputed on each listing.
+      if (!meta.tocSource) {
         console.log(`[books] re-indexing legacy TOC for ${meta.id}`);
         meta = await ingestBook(pdfPath, meta.name, fs.statSync(pdfPath).size, meta.id);
         saveBookMetadata(meta);
@@ -415,20 +447,14 @@ app.post('/api/chat', async (req: Request, res: Response): Promise<void> => {
 
     let mounted = loadMountedBooks(bookIds, books);
 
-    // ---- STAGE 1b: recover an outline by sight for books the file could not index ----
-    if (mounted.some((book) => book.toc.length === 0 && !book.visionIndexAttempted)) {
+    // ---- STAGE 1b: catch up on books uploaded before any key was configured ----
+    if (mounted.some(needsDeferredVision)) {
       mounted = await Promise.all(
-        mounted.map(async (book) => {
-          if (book.toc.length > 0 || book.visionIndexAttempted) return book;
-          const recovered = await recoverOutlineWithVision({
-            book,
-            provider,
-            model: answerModel,
-            credentials,
-            channel,
-          });
-          return recovered ?? { ...book, visionIndexAttempted: true };
-        })
+        mounted.map((book) =>
+          needsDeferredVision(book)
+            ? recoverOutlineWithVision({ book, provider, model: answerModel, credentials, channel })
+            : book
+        )
       );
     }
 

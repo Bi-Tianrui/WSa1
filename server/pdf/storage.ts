@@ -21,8 +21,11 @@ export interface BookMetadata {
   toc: TocItem[];
   uploadTime: string;
   tocSource: TocSource;
-  /** Set once the contents page has been read visually, so a miss is not retried. */
-  visionIndexAttempted?: boolean;
+  /**
+   * Set once the front pages have been shown to a vision model. Recognition is never
+   * repeated for a book, whether it succeeded or came up empty.
+   */
+  visionAttempted?: boolean;
 }
 
 export function getBookPath(bookId: string): string {
@@ -53,7 +56,7 @@ export function readBookMetadata(bookId: string): BookMetadata | null {
       toc: Array.isArray(stored.toc) ? stored.toc : [],
       uploadTime: stored.uploadTime,
       tocSource: stored.tocSource,
-      visionIndexAttempted: stored.visionIndexAttempted,
+      visionAttempted: stored.visionAttempted,
     };
   } catch {
     return null;

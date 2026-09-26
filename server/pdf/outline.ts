@@ -1,6 +1,12 @@
+import { ChatProvider, ProviderCredentials, VisualPayload } from '../providers/types';
 import { PdfDocument, readPageText } from './document';
+import { renderPageRange } from './raster';
+import { slicePdf } from './slice';
 
-export type TocSource = 'bookmarks' | 'text-scan' | 'vision' | 'none';
+export type TocSource = 'bookmarks' | 'text-scan' | 'vision' | 'synthesized' | 'none';
+
+/** Page span of one fallback block when no real outline can be obtained. */
+const SYNTHETIC_BLOCK_PAGES = 30;
 
 export interface TocItem {
   title: string;
@@ -183,13 +189,11 @@ async function fromPrintedContents(doc: PdfDocument, totalPages: number): Promis
 }
 
 /**
- * Extracts a chapter outline from the file alone: native bookmarks first, then a printed
- * contents page if the book carries a text layer.
+ * Extracts a chapter outline from the file alone, at zero token cost: native bookmarks
+ * first, then a printed contents page if the book carries a text layer.
  *
- * When neither works the result is deliberately empty. Inventing fixed-size chunks would
- * hand routing a fabricated table of contents and send the reader to an arbitrary page;
- * an empty index instead lets the pipeline fall back to reading the contents page with
- * the model's own eyes.
+ * An empty result means the file cannot be indexed by parsing, which is the signal for
+ * the caller to look at the front pages with a vision model instead.
  */
 export async function extractOutline(
   doc: PdfDocument,
@@ -212,9 +216,64 @@ export async function extractOutline(
   return { toc: [], source: 'none' };
 }
 
-/** Normalizes model-transcribed outline entries into the same shape as parsed ones. */
+// ==========================================
+// VISUAL OUTLINE: reading the printed contents page with a vision model
+// ==========================================
+
+/** How many leading pages are shown to the model when hunting for the contents page. */
+export const VISUAL_TOC_PAGES = 15;
+
+const VISUAL_TOC_PROMPT = `你是一个严谨的教材编目员。请阅读提供的教材前置页图片，找到印刷的"目录"（Table of Contents），识别所有一级章节的名称、起始页码与终止页码。
+请直接输出严格的合法 JSON 数组，格式如下：
+[
+  {"title": "第一章 ...", "startPage": 1, "endPage": 35},
+  {"title": "第二章 ...", "startPage": 36, "endPage": 78}
+]
+严禁输出任何多余废话或 Markdown 标记，保证 JSON 可以被 JSON.parse 直接解析。`;
+
+/** Strips whatever fencing the model wrapped the payload in and recovers the array. */
+export function parseVisualOutlineJson(raw: string): any[] {
+  if (!raw || typeof raw !== 'string') return [];
+
+  const text = raw
+    .trim()
+    .replace(/^```(?:json)?\s*/i, '')
+    .replace(/\s*```$/i, '')
+    .trim();
+
+  const attempt = (candidate: string): any[] | null => {
+    try {
+      const parsed = JSON.parse(candidate);
+      if (Array.isArray(parsed)) return parsed;
+      // Some models insist on wrapping the array in an object.
+      for (const key of ['entries', 'toc', 'chapters', 'data']) {
+        if (Array.isArray(parsed?.[key])) return parsed[key];
+      }
+    } catch {}
+    return null;
+  };
+
+  const direct = attempt(text);
+  if (direct) return direct;
+
+  const first = text.indexOf('[');
+  const last = text.lastIndexOf(']');
+  if (first !== -1 && last > first) {
+    const sliced = attempt(text.slice(first, last + 1));
+    if (sliced) return sliced;
+  }
+
+  return [];
+}
+
+/**
+ * Normalizes model-transcribed entries into the same shape as parsed ones.
+ *
+ * The model reports the page numbers *printed* in the contents page. Those are accepted
+ * as written; only ordering and document bounds are enforced here.
+ */
 export function buildOutlineFromEntries(
-  entries: Array<{ title?: unknown; startPage?: unknown }>,
+  entries: Array<{ title?: unknown; startPage?: unknown; endPage?: unknown }>,
   totalPages: number
 ): TocItem[] {
   const items: TocItem[] = [];
@@ -225,11 +284,85 @@ export function buildOutlineFromEntries(
     const startPage = Math.floor(Number(entry?.startPage));
     if (!title || seen.has(title)) continue;
     if (!Number.isFinite(startPage) || startPage < 1 || startPage > totalPages) continue;
+
+    const declaredEnd = Math.floor(Number(entry?.endPage));
+    const endPage =
+      Number.isFinite(declaredEnd) && declaredEnd >= startPage && declaredEnd <= totalPages
+        ? declaredEnd
+        : undefined;
+
     seen.add(title);
-    items.push({ title, startPage, level: 0 });
+    items.push({ title, startPage, endPage, level: 0 });
     if (items.length >= MAX_OUTLINE_ENTRIES) break;
   }
 
   if (items.length < 2 || new Set(items.map((i) => i.startPage)).size < 2) return [];
-  return assignEndPages(items, totalPages);
+
+  const sorted = [...items].sort((a, b) => a.startPage - b.startPage);
+  const withEnds = assignEndPages(
+    sorted.map(({ endPage, ...rest }) => rest),
+    totalPages
+  );
+  // Prefer an end page the model actually read off the contents page.
+  return withEnds.map((item, index) => ({
+    ...item,
+    endPage: sorted[index].endPage ?? item.endPage,
+  }));
+}
+
+export interface VisualOutlineContext {
+  bookId: string;
+  totalPages: number;
+  provider: ChatProvider;
+  model: string;
+  credentials: ProviderCredentials;
+  signal: AbortSignal;
+}
+
+/**
+ * Reads the printed contents page off the front pages using the configured vision model.
+ *
+ * Both transports carry the same 15 pages: Gemini receives them as a sliced PDF, while
+ * chat-completions endpoints receive them rendered as images.
+ */
+export async function extractVisualOutline(ctx: VisualOutlineContext): Promise<TocItem[]> {
+  const lastPage = Math.min(VISUAL_TOC_PAGES, ctx.totalPages);
+
+  let payload: VisualPayload;
+  if (ctx.provider.excerptFormat === 'pdf') {
+    const slice = await slicePdf(ctx.bookId, 1, lastPage);
+    payload = { pdfBase64: slice.buffer.toString('base64') };
+  } else {
+    const rendered = await renderPageRange(ctx.bookId, 1, lastPage);
+    payload = { images: rendered.images };
+  }
+
+  const raw = await ctx.provider.inspectPages({
+    model: ctx.model,
+    credentials: ctx.credentials,
+    prompt: VISUAL_TOC_PROMPT,
+    payload,
+    signal: ctx.signal,
+  });
+
+  const toc = buildOutlineFromEntries(parseVisualOutlineJson(raw), ctx.totalPages);
+  console.log(`[outline] visual pass on ${ctx.bookId} produced ${toc.length} entries`);
+  return toc;
+}
+
+/**
+ * Last resort: fixed-size page blocks so a book is never left unusable.
+ *
+ * These are not real chapters and routing against them is a guess, so this is only
+ * reached when both parsing and visual reading have failed.
+ */
+export function synthesizeOutline(totalPages: number): TocItem[] {
+  const items: TocItem[] = [];
+
+  for (let start = 1; start <= totalPages; start += SYNTHETIC_BLOCK_PAGES) {
+    const end = Math.min(totalPages, start + SYNTHETIC_BLOCK_PAGES - 1);
+    items.push({ title: `第 ${start}-${end} 页`, startPage: start, endPage: end, level: 0 });
+  }
+
+  return items;
 }

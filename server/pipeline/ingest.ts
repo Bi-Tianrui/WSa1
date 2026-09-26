@@ -1,8 +1,9 @@
 import fs from 'fs';
 import { PDFDocument } from 'pdf-lib';
 import { withPdfDocument } from '../pdf/document';
-import { extractOutline } from '../pdf/outline';
+import { extractOutline, extractVisualOutline, synthesizeOutline } from '../pdf/outline';
 import { BookMetadata } from '../pdf/storage';
+import { ChatProvider, ProviderCredentials } from '../providers';
 
 /**
  * STAGE 1 - Textbook ingest, at zero token cost.
@@ -47,18 +48,30 @@ function formatUploadTime(): string {
   return `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
 }
 
+/** Everything needed to read a contents page with the user's configured vision model. */
+export interface VisionContext {
+  provider: ChatProvider;
+  model: string;
+  credentials: ProviderCredentials;
+  signal?: AbortSignal;
+}
+
 /**
  * Builds the local index for one textbook: page count and chapter outline. This index is
- * the only thing consulted when routing a question.
+ * the only thing consulted when routing a question, and it is written once.
  *
- * A book whose outline cannot be read from the file is stored with an empty one; the
- * chat pipeline then has the model read its printed contents page on first use.
+ * Three tiers, cheapest first:
+ *   1. Native bookmarks or a parseable printed contents page - free, no model involved.
+ *   2. The front pages read by the configured vision model - only for scans, which have
+ *      neither, and only when credentials are available.
+ *   3. Fixed-size page blocks - a guess, kept solely so a book is never unusable.
  */
 export async function ingestBook(
   filePath: string,
   safeName: string,
   fileSize: number,
-  bookId: string
+  bookId: string,
+  vision?: VisionContext | null
 ): Promise<BookMetadata> {
   const rawBuffer = fs.readFileSync(filePath);
   const pageCount = await resolvePageCount(rawBuffer, fileSize);
@@ -73,7 +86,34 @@ export async function ingestBook(
       tocSource = outline.source;
     });
   } catch (err) {
-    console.warn('[ingest] outline pass failed, leaving index empty for visual reading:', err);
+    console.warn('[ingest] parsing passes failed, falling through to visual reading:', err);
+  }
+
+  let visionAttempted = false;
+
+  if (toc.length === 0 && vision) {
+    visionAttempted = true;
+    try {
+      const visual = await extractVisualOutline({
+        bookId,
+        totalPages: pageCount,
+        provider: vision.provider,
+        model: vision.model,
+        credentials: vision.credentials,
+        signal: vision.signal ?? new AbortController().signal,
+      });
+      if (visual.length > 0) {
+        toc = visual;
+        tocSource = 'vision';
+      }
+    } catch (err) {
+      console.warn('[ingest] visual outline read failed, falling back to page blocks:', err);
+    }
+  }
+
+  if (toc.length === 0) {
+    toc = synthesizeOutline(pageCount);
+    tocSource = 'synthesized';
   }
 
   return {
@@ -84,5 +124,6 @@ export async function ingestBook(
     toc,
     uploadTime: formatUploadTime(),
     tocSource,
+    visionAttempted,
   };
 }

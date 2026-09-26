@@ -5,7 +5,7 @@ export interface TocItem {
   level?: number;
 }
 
-export type TocSource = 'bookmarks' | 'text-scan' | 'vision' | 'none';
+export type TocSource = 'bookmarks' | 'text-scan' | 'vision' | 'synthesized' | 'none';
 
 export interface StreamNotice {
   level: 'info' | 'warn';
