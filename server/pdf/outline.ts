@@ -1,7 +1,6 @@
-import { MAX_SLICE_PAGES } from '../budget';
 import { PdfDocument, readPageText } from './document';
 
-export type TocSource = 'bookmarks' | 'text-scan' | 'synthesized';
+export type TocSource = 'bookmarks' | 'text-scan' | 'vision' | 'none';
 
 export interface TocItem {
   title: string;
@@ -183,30 +182,14 @@ async function fromPrintedContents(doc: PdfDocument, totalPages: number): Promis
   return assignEndPages(items, totalPages);
 }
 
-/** Tier 3: even chunking so routing and slicing always have a target range. */
-export function synthesizeOutline(totalPages: number): TocItem[] {
-  const items: TocItem[] = [];
-  const chunkSize = Math.max(20, Math.min(MAX_SLICE_PAGES, Math.ceil(totalPages / 12)));
-  let current = 1;
-  let index = 1;
-
-  while (current <= totalPages) {
-    const end = Math.min(totalPages, current + chunkSize - 1);
-    items.push({
-      title: `第 ${index} 部分 (P${current} - P${end})`,
-      startPage: current,
-      endPage: end,
-      level: 0,
-    });
-    current = end + 1;
-    index++;
-  }
-  return items;
-}
-
 /**
- * Extracts a chapter outline: native bookmarks, then printed contents pages, then even
- * chunks. Never returns an empty list, so slicing always has somewhere to aim.
+ * Extracts a chapter outline from the file alone: native bookmarks first, then a printed
+ * contents page if the book carries a text layer.
+ *
+ * When neither works the result is deliberately empty. Inventing fixed-size chunks would
+ * hand routing a fabricated table of contents and send the reader to an arbitrary page;
+ * an empty index instead lets the pipeline fall back to reading the contents page with
+ * the model's own eyes.
  */
 export async function extractOutline(
   doc: PdfDocument,
@@ -226,5 +209,27 @@ export async function extractOutline(
     console.warn('[outline] printed-contents pass failed:', err);
   }
 
-  return { toc: synthesizeOutline(totalPages), source: 'synthesized' };
+  return { toc: [], source: 'none' };
+}
+
+/** Normalizes model-transcribed outline entries into the same shape as parsed ones. */
+export function buildOutlineFromEntries(
+  entries: Array<{ title?: unknown; startPage?: unknown }>,
+  totalPages: number
+): TocItem[] {
+  const items: TocItem[] = [];
+  const seen = new Set<string>();
+
+  for (const entry of entries) {
+    const title = sanitizeTitle(entry?.title);
+    const startPage = Math.floor(Number(entry?.startPage));
+    if (!title || seen.has(title)) continue;
+    if (!Number.isFinite(startPage) || startPage < 1 || startPage > totalPages) continue;
+    seen.add(title);
+    items.push({ title, startPage, level: 0 });
+    if (items.length >= MAX_OUTLINE_ENTRIES) break;
+  }
+
+  if (items.length < 2 || new Set(items.map((i) => i.startPage)).size < 2) return [];
+  return assignEndPages(items, totalPages);
 }

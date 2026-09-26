@@ -250,10 +250,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
     await processPdfFile(file);
   };
 
+  // Only endpoints that serve vision-capable models belong here.
   const URL_PRESETS = [
-    { label: 'DeepSeek 官方', url: 'https://api.deepseek.com/v1' },
     { label: 'OpenAI 官方', url: 'https://api.openai.com/v1' },
-    { label: 'Moonshot 官方', url: 'https://api.moonshot.cn/v1' },
+    { label: 'Anthropic 兼容', url: 'https://api.anthropic.com/v1' },
+    { label: 'OpenRouter', url: 'https://openrouter.ai/api/v1' },
     { label: '本地 Ollama', url: 'http://localhost:11434/v1' },
   ];
 
@@ -271,7 +272,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             </h1>
           </div>
           <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300 font-mono border border-emerald-500/30 flex items-center gap-1">
-            <Zap className="w-2.5 h-2.5" /> 双协议通用
+            <Zap className="w-2.5 h-2.5" /> 全模态直读
           </span>
         </div>
       </div>
@@ -286,7 +287,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
               服务商模式切换 (Provider)
             </span>
             <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-500/20 text-blue-300 font-mono">
-              协议解耦
+              仅多模态
             </span>
           </label>
           <div className="grid grid-cols-2 gap-1.5 p-1 bg-slate-950/70 rounded-lg border border-slate-800">
@@ -299,7 +300,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   : 'text-slate-400 hover:text-slate-200'
               }`}
             >
-              <span>🌐 Google Gemini</span>
+              <span>🌐 Google Gemini 官方</span>
             </button>
             <button
               type="button"
@@ -310,7 +311,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   : 'text-slate-400 hover:text-slate-200'
               }`}
             >
-              <span>⚡ OpenAI / DeepSeek</span>
+              <span>⚡ OpenAI / Claude</span>
             </button>
           </div>
         </div>
@@ -349,11 +350,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
               </button>
             </div>
             <p className="text-[11px] text-slate-400 leading-tight">
-              直连 Google 官方端点，章节切片以原生 PDF 形式送达。
+              直连 Google 官方端点，章节切片以原生 PDF 直读版面。推荐 gemini-1.5-flash / gemini-1.5-pro。
             </p>
           </div>
         ) : (
-          /* OpenAI / DeepSeek Compatible Inputs */
+          /* OpenAI / Claude multimodal-compatible endpoint inputs */
           <div className="space-y-3 p-3 rounded-xl bg-slate-800/60 border border-slate-750">
             <div className="space-y-1.5">
               <label className="text-xs font-semibold text-slate-300 flex items-center justify-between">
@@ -366,7 +367,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 type="text"
                 value={openaiBaseUrl}
                 onChange={(e) => onOpenaiBaseUrlChange(e.target.value)}
-                placeholder="https://api.deepseek.com/v1"
+                placeholder="https://api.openai.com/v1"
                 className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-hidden focus:ring-2 focus:ring-indigo-500 font-mono"
               />
               {/* Quick URL Preset Pills */}
@@ -415,6 +416,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 </button>
               </div>
             </div>
+            <p className="text-[11px] text-slate-400 leading-tight">
+              章节切片渲染为高精度页面影像后直送模型。请选择具备视觉能力的模型，推荐 gpt-4o / gpt-4o-mini / claude-3-5-sonnet。
+            </p>
           </div>
         )}
 
@@ -630,22 +634,31 @@ export const Sidebar: React.FC<SidebarProps> = ({
                           </>
                         ) : null}
                         <span>•</span>
-                        <span className="text-emerald-400 flex items-center gap-0.5">
-                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 inline-block animate-pulse"></span>
-                          {book.tocSource === 'bookmarks'
-                            ? '书签目录已索引'
-                            : book.tocSource === 'text-scan'
-                            ? '正文目录已识别'
-                            : 'TOC大纲已索引'}
-                        </span>
+                        {book.tocSource === 'none' ? (
+                          <span className="text-slate-400 flex items-center gap-0.5">
+                            <span className="w-1.5 h-1.5 rounded-full bg-slate-500 inline-block"></span>
+                            待视觉建立目录
+                          </span>
+                        ) : (
+                          <span className="text-emerald-400 flex items-center gap-0.5">
+                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 inline-block animate-pulse"></span>
+                            {book.tocSource === 'bookmarks'
+                              ? '书签目录已索引'
+                              : book.tocSource === 'text-scan'
+                              ? '正文目录已识别'
+                              : book.tocSource === 'vision'
+                              ? '视觉直读目录已建立'
+                              : 'TOC大纲已索引'}
+                          </span>
+                        )}
                       </div>
-                      {book.textLayer === 'none' && (
+                      {book.tocSource === 'none' && (
                         <div
-                          className="mt-1 text-[10px] text-amber-300/90 flex items-start gap-1 leading-snug"
-                          title="扫描版教材没有文字层，纯文本模型无法读取页面内容"
+                          className="mt-1 text-[10px] text-slate-400 flex items-start gap-1 leading-snug"
+                          title="该教材没有可解析的书签或文字目录，首次提问时将由模型直接阅读其印刷目录页"
                         >
-                          <AlertTriangle className="w-3 h-3 shrink-0 mt-px" />
-                          <span>扫描版（无文字层）· 建议用 Gemini 研读</span>
+                          <Eye className="w-3 h-3 shrink-0 mt-px" />
+                          <span>无书签目录 · 首次提问时视觉直读</span>
                         </div>
                       )}
                     </div>
@@ -668,7 +681,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
       <div className="p-3 border-t border-slate-800 bg-slate-950/60 flex items-center justify-between">
         <div className="text-[11px] text-slate-400 flex items-center gap-1">
           <Globe className="w-3.5 h-3.5 text-blue-400" />
-          <span>{provider === 'gemini' ? 'Google 官方直连' : 'OpenAI / DeepSeek'}</span>
+          <span>{provider === 'gemini' ? 'Google 官方直连' : 'OpenAI / Claude 多模态'}</span>
         </div>
         <button
           onClick={onResetChat}

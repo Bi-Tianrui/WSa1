@@ -144,7 +144,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                     大学工科教材伴读室
                   </h2>
                   <p className="text-xs text-slate-500 mt-0.5">
-                    挂载教材即可展开高精度定理推导与学术排版
+                    挂载教材即可展开全模态高精度定理推导与学术排版
                   </p>
                 </div>
               </div>
@@ -243,7 +243,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                               ? msg.routing.endPage - msg.routing.startPage + 1
                               : 0}
                             页
-                            {msg.routing.payload === 'text' ? ' · 纯文本' : ' · 原生PDF'}
+                            {msg.routing.payload === 'image' ? ' · 页面影像' : ' · 原生PDF'}
                             {msg.contextTokens ? ` · ~${Math.max(1, Math.round(msg.contextTokens / 1000))}k Token` : ''}
                           </span>
                         </div>
@@ -280,12 +280,12 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                       </div>
                     )}
 
-                    {/* DeepSeek Reasoning Content if available */}
+                    {/* Reasoning content, when the endpoint emits it */}
                     {msg.reasoning && (
                       <details className="mb-2.5 p-2 rounded-lg bg-slate-50/90 border border-indigo-100 text-xs text-slate-600 group" open={isStreaming}>
                         <summary className="font-semibold text-indigo-900 cursor-pointer select-none flex items-center gap-1.5">
                           <Sparkles className="w-3.5 h-3.5 text-indigo-600" />
-                          <span>思维链推导 (DeepSeek / Reasoning)</span>
+                          <span>思维链推导 (Reasoning)</span>
                         </summary>
                         <div className="mt-2 text-[11px] font-sans whitespace-pre-wrap text-slate-600 bg-white/90 p-2.5 rounded border border-slate-200 leading-relaxed max-h-60 overflow-y-auto">
                           {msg.reasoning}

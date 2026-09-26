@@ -2,9 +2,9 @@ import path from 'path';
 import { createRequire } from 'module';
 import * as pdfjs from 'pdfjs-dist/legacy/build/pdf.mjs';
 
-// CJK textbooks rely on predefined CMaps and standard font data. Without these two
-// paths pdf.js silently drops every Chinese glyph and returns Latin punctuation only,
-// which is what made text extraction useless for text-only models.
+// Text extraction here serves one purpose only: reading a printed contents page while
+// building the local index. CJK books need predefined CMaps and standard font data, or
+// pdf.js silently drops every Chinese glyph and returns Latin punctuation alone.
 const requireFromHere = createRequire(import.meta.url);
 const PDFJS_ROOT = path.dirname(requireFromHere.resolve('pdfjs-dist/package.json'));
 const CMAP_URL = path.join(PDFJS_ROOT, 'cmaps') + path.sep;
@@ -56,46 +56,3 @@ export async function readPageText(doc: PdfDocument, pageNumber: number): Promis
   }
 }
 
-/** Counts characters that actually carry meaning, ignoring layout whitespace. */
-export function meaningfulCharCount(text: string): number {
-  return text.replace(/\s+/g, '').length;
-}
-
-export type TextLayerQuality = 'rich' | 'sparse' | 'none';
-
-export function classifyTextDensity(totalChars: number, pagesSampled: number): TextLayerQuality {
-  if (pagesSampled <= 0) return 'none';
-  const perPage = totalChars / pagesSampled;
-  if (perPage < 50) return 'none';
-  if (perPage < 200) return 'sparse';
-  return 'rich';
-}
-
-/**
- * Samples pages spread across the document to decide whether a usable text layer exists.
- * Scanned textbooks return only a watermark or nothing at all, which text-only models
- * cannot work with no matter how the slice is prepared.
- */
-export async function probeTextLayer(
-  doc: PdfDocument,
-  totalPages: number
-): Promise<TextLayerQuality> {
-  const wanted = Math.min(8, totalPages);
-  const samples = new Set<number>();
-  for (let i = 0; i < wanted; i++) {
-    // Spread the samples so front matter alone cannot make a scan look readable.
-    const ratio = (i + 1) / (wanted + 1);
-    samples.add(Math.max(1, Math.min(totalPages, Math.round(totalPages * ratio))));
-  }
-
-  let chars = 0;
-  let sampled = 0;
-  for (const pageNumber of samples) {
-    try {
-      chars += meaningfulCharCount(await readPageText(doc, pageNumber));
-      sampled++;
-    } catch {}
-  }
-
-  return classifyTextDensity(chars, sampled);
-}

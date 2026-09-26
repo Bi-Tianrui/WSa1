@@ -67,9 +67,7 @@ function renderCatalog(books: BookMetadata[], entriesPerBook: number): string {
   const lines: string[] = [];
 
   books.forEach((book, index) => {
-    const readability =
-      book.textLayer === 'none' ? '（扫描版，无文字层）' : book.textLayer === 'sparse' ? '（文字层稀疏）' : '';
-    lines.push(`【教材 ${index + 1}】《${book.name}》（ID: ${book.id}，共 ${book.pageCount} 页）${readability}`);
+    lines.push(`【教材 ${index + 1}】《${book.name}》（ID: ${book.id}，共 ${book.pageCount} 页）`);
 
     for (const item of selectCatalogEntries(book.toc || [], entriesPerBook)) {
       const indent = '  '.repeat(1 + Math.min(2, item.level ?? 0));
@@ -236,7 +234,11 @@ export interface RouteOptions {
 
 /** Runs the model routing hop, falling back to keyword matching on any failure. */
 export async function routeQuestion(options: RouteOptions): Promise<RoutingDecision | null> {
-  const { prompt, books, provider, routingModel, credentials, channel } = options;
+  const { prompt, provider, routingModel, credentials, channel } = options;
+
+  // A book with no outline has nothing to route against; it is skipped rather than
+  // guessed at, so the model is never pointed to an arbitrary page.
+  const books = options.books.filter((book) => (book.toc || []).length > 0);
   if (books.length === 0) return null;
 
   if (!routingModel || !credentials.apiKey) return matchChapterLocally(prompt, books);

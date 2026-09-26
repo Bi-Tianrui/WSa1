@@ -1,14 +1,15 @@
 import {
-  MAX_CONTEXT_TOKENS,
   MAX_HISTORY_TOKENS,
   MAX_INLINE_PDF_KB,
+  TOKENS_PER_IMAGE_PAGE,
   TOKENS_PER_PDF_PAGE,
   clampPageRange,
   estimateTokens,
+  maxImagePagesWithinBudget,
   maxPdfPagesWithinBudget,
-  truncateToTokenBudget,
 } from '../budget';
-import { extractPageRangeText, slicePdf } from '../pdf/slice';
+import { renderPageRange } from '../pdf/raster';
+import { slicePdf } from '../pdf/slice';
 import { BookMetadata } from '../pdf/storage';
 import { ChatProvider, HistoryTurn, ProviderCredentials, TextbookExcerpt } from '../providers';
 import { SseChannel } from '../sse';
@@ -19,7 +20,8 @@ import { RoutingDecision } from './route';
  * STAGE 4 - Streaming delivery.
  *
  * Whatever happens here, the payload is bounded twice: by page count and by token
- * budget. A provider only ever sees one chapter-sized excerpt.
+ * budget. A provider only ever sees one chapter-sized excerpt, always as pages to look
+ * at rather than as transcribed prose.
  */
 
 /** Keeps the most recent turns that fit the history budget, oldest dropped first. */
@@ -48,23 +50,23 @@ export function normalizeHistory(history: any): HistoryTurn[] {
 /**
  * Turns a routing decision into a provider-appropriate excerpt.
  *
- * Multimodal providers get the physically sliced PDF; text-only providers get prose
- * extracted from those same pages. Returns null when there is nothing usable to send,
- * which is preferable to shipping empty context harvested from a scan.
+ * Both transports carry the same thing - the pages themselves. Gemini takes the sliced
+ * PDF; chat-completions endpoints take those pages rendered at reading resolution.
  */
 export async function prepareExcerpt(
   decision: RoutingDecision,
   book: BookMetadata,
-  provider: ChatProvider,
-  channel: SseChannel
-): Promise<TextbookExcerpt | null> {
+  provider: ChatProvider
+): Promise<TextbookExcerpt> {
   const [startPage, requestedEnd] = clampPageRange(
     decision.startPage,
     decision.endPage,
     book.pageCount
   );
 
-  if (provider.acceptsPdf) {
+  const common = { bookName: book.name, chapterTitle: decision.chapterTitle };
+
+  if (provider.excerptFormat === 'pdf') {
     // Token budget governs page span; byte budget then guards image-heavy scans.
     const budgetEnd = Math.min(requestedEnd, startPage + maxPdfPagesWithinBudget() - 1);
     let rangeEnd = Math.max(startPage, budgetEnd);
@@ -78,44 +80,29 @@ export async function prepareExcerpt(
 
     const pages = slice.pageRange[1] - slice.pageRange[0] + 1;
     return {
-      bookName: book.name,
-      chapterTitle: decision.chapterTitle,
+      ...common,
       pageRange: slice.pageRange,
       pdfBase64: slice.buffer.toString('base64'),
       estimatedTokens: pages * TOKENS_PER_PDF_PAGE,
     };
   }
 
-  const extracted = await extractPageRangeText(book.id, startPage, requestedEnd);
-
-  if (extracted.quality === 'none') {
-    channel.notice(
-      'warn',
-      `《${book.name}》第 ${startPage}-${requestedEnd} 页为扫描图片，没有可提取的文字层。` +
-        '当前纯文本模型（OpenAI / DeepSeek）无法识别图片内容，本轮将以通识推导作答。' +
-        '如需精读该教材原文，请在左侧切换到 Google Gemini（多模态可直读扫描页）。'
-    );
-    return null;
-  }
-
-  if (extracted.quality === 'sparse') {
-    channel.notice(
-      'info',
-      `《${book.name}》第 ${startPage}-${requestedEnd} 页文字层较稀疏，提取到的原文有限，回答可能存在缺漏。`
-    );
-  }
-
-  const bounded = truncateToTokenBudget(extracted.text, MAX_CONTEXT_TOKENS);
-  if (bounded.length < extracted.text.length) {
-    console.log(`[answer] slice text truncated to ${MAX_CONTEXT_TOKENS} tokens`);
-  }
+  // Rendered pages cost several times more than PDF pages, so the span is tighter.
+  const imageEnd = Math.max(
+    startPage,
+    Math.min(requestedEnd, startPage + maxImagePagesWithinBudget() - 1)
+  );
+  const rendered = await renderPageRange(book.id, startPage, imageEnd);
+  const totalKb = rendered.images.reduce((sum, image) => sum + image.sizeKb, 0);
+  console.log(
+    `[answer] rendered P${rendered.pageRange[0]}-P${rendered.pageRange[1]} as ${rendered.images.length} images (${totalKb}KB)`
+  );
 
   return {
-    bookName: book.name,
-    chapterTitle: decision.chapterTitle,
-    pageRange: extracted.pageRange,
-    text: bounded,
-    estimatedTokens: estimateTokens(bounded),
+    ...common,
+    pageRange: rendered.pageRange,
+    images: rendered.images,
+    estimatedTokens: rendered.images.length * TOKENS_PER_IMAGE_PAGE,
   };
 }
 

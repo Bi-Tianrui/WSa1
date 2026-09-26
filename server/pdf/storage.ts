@@ -1,7 +1,6 @@
 import fs from 'fs';
 import path from 'path';
 import { TocItem, TocSource } from './outline';
-import { TextLayerQuality } from './document';
 
 export const UPLOADS_DIR = path.join(process.cwd(), 'uploads', 'books');
 export const CHUNKS_DIR = path.join(UPLOADS_DIR, 'temp_chunks');
@@ -22,7 +21,8 @@ export interface BookMetadata {
   toc: TocItem[];
   uploadTime: string;
   tocSource: TocSource;
-  textLayer: TextLayerQuality;
+  /** Set once the contents page has been read visually, so a miss is not retried. */
+  visionIndexAttempted?: boolean;
 }
 
 export function getBookPath(bookId: string): string {
@@ -41,7 +41,20 @@ export function readBookMetadata(bookId: string): BookMetadata | null {
   const tocPath = getBookTocPath(bookId);
   if (!fs.existsSync(tocPath)) return null;
   try {
-    return JSON.parse(fs.readFileSync(tocPath, 'utf-8'));
+    const stored = JSON.parse(fs.readFileSync(tocPath, 'utf-8'));
+    // Indexes written by earlier versions carry fields this pipeline no longer has any
+    // notion of, such as text-layer quality. Project onto the current shape so they
+    // cannot leak back out through the API.
+    return {
+      id: stored.id,
+      name: stored.name,
+      sizeMb: stored.sizeMb,
+      pageCount: stored.pageCount,
+      toc: Array.isArray(stored.toc) ? stored.toc : [],
+      uploadTime: stored.uploadTime,
+      tocSource: stored.tocSource,
+      visionIndexAttempted: stored.visionIndexAttempted,
+    };
   } catch {
     return null;
   }

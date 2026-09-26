@@ -18,7 +18,7 @@ export default function App() {
     return localStorage.getItem('gemini_api_key') || '';
   });
   const [openaiBaseUrl, setOpenaiBaseUrl] = useState<string>(() => {
-    return localStorage.getItem('openai_base_url') || 'https://api.deepseek.com/v1';
+    return localStorage.getItem('openai_base_url') || 'https://api.openai.com/v1';
   });
   const [openaiApiKey, setOpenaiApiKey] = useState<string>(() => {
     return localStorage.getItem('openai_api_key') || '';
@@ -132,7 +132,6 @@ export default function App() {
               uploadTime: b.uploadTime || '刚刚',
               toc: b.toc || [],
               tocSource: b.tocSource,
-              textLayer: b.textLayer,
             }))
           );
         }
@@ -462,7 +461,7 @@ export default function App() {
                 <Zap className="w-3.5 h-3.5 text-indigo-400" />
               )}
               <span className="font-mono">
-                {provider === 'gemini' ? 'Google 官方' : 'OpenAI/DeepSeek'}
+                {provider === 'gemini' ? 'Google 官方' : 'OpenAI / Claude'}
               </span>
             </span>
             <div className="h-3 w-px bg-slate-700"></div>

@@ -5,10 +5,7 @@ export interface TocItem {
   level?: number;
 }
 
-/** How readable a book's text layer is for text-only models. */
-export type TextLayerQuality = 'rich' | 'sparse' | 'none';
-
-export type TocSource = 'bookmarks' | 'text-scan' | 'synthesized';
+export type TocSource = 'bookmarks' | 'text-scan' | 'vision' | 'none';
 
 export interface StreamNotice {
   level: 'info' | 'warn';
@@ -28,8 +25,8 @@ export interface ScholarRouting {
   source?: 'model' | 'keyword';
   /** Estimated tokens this slice actually costs. */
   contextTokens?: number;
-  /** Which form the excerpt was sent in for this provider. */
-  payload?: 'pdf' | 'text';
+  /** Which visual form the excerpt was sent in for this provider. */
+  payload?: 'pdf' | 'image';
 }
 
 export interface ChatMessage {
@@ -58,7 +55,6 @@ export interface MountedBook {
   uploadTime: string;
   toc?: TocItem[];
   tocSource?: TocSource;
-  textLayer?: TextLayerQuality;
 }
 
 export type GeminiModelType = string;

@@ -24,12 +24,32 @@ export const MAX_HISTORY_TOKENS = 4_000;
  */
 export const TOKENS_PER_PDF_PAGE = 258;
 
+/**
+ * A rendered page costs far more than a PDF page: vision endpoints retile the image and
+ * charge per tile, which lands a portrait textbook page near this figure.
+ */
+export const TOKENS_PER_IMAGE_PAGE = 1_100;
+
 /** Byte ceiling for one inline PDF upload, guarding image-heavy scans. */
 export const MAX_INLINE_PDF_KB = 8 * 1024;
+
+/**
+ * Long-edge resolution for rendered pages. Vision endpoints downsample to roughly 768px
+ * on the short edge anyway, so going much higher inflates the request without adding
+ * any detail the model can actually see.
+ */
+export const IMAGE_LONG_EDGE_PX = 1_400;
+
+export const IMAGE_JPEG_QUALITY = 76;
 
 /** Largest page span that still fits the token budget when sent as a raw PDF. */
 export function maxPdfPagesWithinBudget(): number {
   return Math.max(1, Math.min(MAX_SLICE_PAGES, Math.floor(MAX_CONTEXT_TOKENS / TOKENS_PER_PDF_PAGE)));
+}
+
+/** Largest page span that still fits the token budget when sent as rendered images. */
+export function maxImagePagesWithinBudget(): number {
+  return Math.max(1, Math.min(MAX_SLICE_PAGES, Math.floor(MAX_CONTEXT_TOKENS / TOKENS_PER_IMAGE_PAGE)));
 }
 
 /**
@@ -40,18 +60,6 @@ export function estimateTokens(text: string): number {
   if (!text) return 0;
   const cjk = (text.match(/[\u3000-\u303f\u3400-\u9fff\uf900-\ufaff\uff00-\uffef]/g) || []).length;
   return Math.ceil(cjk + (text.length - cjk) / 4);
-}
-
-/** Cuts text down until it provably fits the token budget. */
-export function truncateToTokenBudget(text: string, budgetTokens: number): string {
-  if (!text) return '';
-  let out = text;
-  while (estimateTokens(out) > budgetTokens && out.length > 0) {
-    const ratio = budgetTokens / estimateTokens(out);
-    const nextLen = Math.max(1, Math.floor(out.length * ratio * 0.95));
-    out = nextLen >= out.length ? out.slice(0, out.length - 1) : out.slice(0, nextLen);
-  }
-  return out;
 }
 
 /** Clamps a requested range to the document and to MAX_SLICE_PAGES. */

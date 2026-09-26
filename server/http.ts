@@ -46,6 +46,8 @@ export async function resilientFetch(
 
       lastFailure = classifyHttpFailure(response.status, await response.text().catch(() => ''));
     } catch (err) {
+      // `fetch failed` on its own says nothing; the cause carries the real syscall error.
+      console.warn(`[http] ${url} attempt ${attempt + 1} threw:`, err, (err as any)?.cause);
       lastFailure = classifyThrownFailure(err);
     } finally {
       clearTimeout(timeoutHandle);

@@ -1,9 +1,11 @@
 import { GoogleGenAI } from '@google/genai';
 import { LlmFailureError, classifyThrownFailure } from '../errors';
-import { AnswerRequest, ChatProvider, RouteRequest } from './types';
+import { AnswerRequest, ChatProvider, InspectRequest, RouteRequest, VisualPayload } from './types';
 
 const ROUTING_TIMEOUT_MS = 45_000;
 const ANSWER_TIMEOUT_MS = 120_000;
+
+type Part = { text?: string; inlineData?: { mimeType: string; data: string } };
 
 function createClient(apiKey: string, timeout: number): GoogleGenAI {
   return new GoogleGenAI({
@@ -12,13 +14,25 @@ function createClient(apiKey: string, timeout: number): GoogleGenAI {
   });
 }
 
+/** Gemini reads the sliced PDF itself, preserving layout, figures and handwriting. */
+function payloadParts(payload: VisualPayload): Part[] {
+  if (payload.pdfBase64) {
+    return [{ inlineData: { mimeType: 'application/pdf', data: payload.pdfBase64 } }];
+  }
+  return (payload.images || []).map((image) => ({
+    inlineData: { mimeType: 'image/jpeg', data: image.base64 },
+  }));
+}
+
 /**
- * Google Gemini: the only provider allowed to receive a raw PDF stream, and then only
- * the sliced chapter excerpt, never a whole book.
+ * Google Gemini, addressed at its native endpoint.
+ *
+ * Pages travel as the physically sliced PDF, never as extracted text and never as a
+ * whole book.
  */
 export const geminiProvider: ChatProvider = {
   id: 'gemini',
-  acceptsPdf: true,
+  excerptFormat: 'pdf',
 
   async requestRouting(req: RouteRequest): Promise<string> {
     const ai = createClient(req.credentials.apiKey, ROUTING_TIMEOUT_MS);
@@ -34,13 +48,24 @@ export const geminiProvider: ChatProvider = {
     return response.text?.trim() || '';
   },
 
+  async inspectPages(req: InspectRequest): Promise<string> {
+    const ai = createClient(req.credentials.apiKey, ROUTING_TIMEOUT_MS);
+    try {
+      const response = await ai.models.generateContent({
+        model: req.model,
+        contents: [{ role: 'user', parts: [...payloadParts(req.payload), { text: req.prompt }] }],
+        config: { temperature: 0.1, responseMimeType: 'application/json', abortSignal: req.signal },
+      });
+      return response.text?.trim() || '';
+    } catch (err) {
+      throw new LlmFailureError(classifyThrownFailure(err));
+    }
+  },
+
   async streamAnswer(req: AnswerRequest): Promise<void> {
     const ai = createClient(req.credentials.apiKey, ANSWER_TIMEOUT_MS);
 
-    const contents: Array<{
-      role: 'user' | 'model';
-      parts: Array<{ text?: string; inlineData?: { mimeType: string; data: string } }>;
-    }> = [];
+    const contents: Array<{ role: 'user' | 'model'; parts: Part[] }> = [];
 
     for (const turn of req.history) {
       contents.push({
@@ -51,13 +76,13 @@ export const geminiProvider: ChatProvider = {
     // Gemini rejects a conversation that opens with a model turn.
     while (contents.length > 0 && contents[0].role === 'model') contents.shift();
 
-    const parts: Array<{ text?: string; inlineData?: { mimeType: string; data: string } }> = [];
-    if (req.excerpt?.pdfBase64) {
-      parts.push({ inlineData: { mimeType: 'application/pdf', data: req.excerpt.pdfBase64 } });
+    const parts: Part[] = [];
+    if (req.excerpt) {
+      parts.push(...payloadParts(req.excerpt));
       parts.push({
         text: `【学术推演任务】：
 上述所附 PDF 为《${req.excerpt.bookName}》中「${req.excerpt.chapterTitle}」经精准切出的核心章节（第 ${req.excerpt.pageRange[0]} 至 ${req.excerpt.pageRange[1]} 页）。
-请精读切片中的定理叙述与推导步骤，针对学生的以下提问进行详尽、权威、工科级的学术解答与 LaTeX 推导演绎：
+请直接研读页面上的版面、公式、插图与定理叙述，针对学生的以下提问进行详尽、权威、工科级的学术解答与 LaTeX 推导演绎：
 
 ${req.prompt}`,
       });

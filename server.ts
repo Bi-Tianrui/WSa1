@@ -22,11 +22,15 @@ import { getProvider, normalizeProviderId, ProviderId } from './server/providers
 import { ingestBook } from './server/pipeline/ingest';
 import { pickRoutingModel, routeQuestion } from './server/pipeline/route';
 import { prepareExcerpt, streamAnswer } from './server/pipeline/answer';
+import { recoverOutlineWithVision } from './server/pipeline/visionIndex';
 
 dotenv.config();
 
 const PORT = 3000;
 const app = express();
+
+/** Vision-capable by default; text-only endpoints cannot serve this pipeline. */
+const DEFAULT_OPENAI_BASE_URL = 'https://api.openai.com/v1';
 
 // The request body only ever carries prompts and TOC-sized JSON; PDFs travel as
 // multipart uploads and are read from disk one slice at a time.
@@ -67,6 +71,10 @@ function resolveDynamicModel(requestedModel: unknown, provider: ProviderId): str
 function rankModels(models: string[], scorer: (lowered: string) => number): string[] {
   return [...models].sort((a, b) => scorer(b.toLowerCase()) - scorer(a.toLowerCase()));
 }
+
+/** Model families that can read a page image, and families that provably cannot. */
+const VISION_MODEL_HINTS = ['4o', '4.1', 'o4', 'vision', 'sonnet', 'opus', 'haiku', 'vl', 'omni'];
+const TEXT_ONLY_MODEL_HINTS = ['deepseek-chat', 'deepseek-reasoner', 'embedding', 'rerank', 'tts', 'whisper', 'moderation'];
 
 async function discoverGeminiModels(apiKey: string): Promise<string[]> {
   const url = `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}`;
@@ -114,9 +122,13 @@ async function discoverOpenAiModels(apiKey: string, baseUrl: string): Promise<st
     new Set(raw.map((item: any) => (typeof item === 'string' ? item : item.id || item.name)).filter(Boolean))
   ) as string[];
 
-  return rankModels(models, (l) =>
-    l.includes('chat') || l.includes('4o') ? 100 : l.includes('reason') || l.includes('r1') || l.includes('o1') ? 90 : 50
-  );
+  // Pages reach this channel as images, so vision-capable models are ranked to the top
+  // and known text-only families are pushed to the bottom.
+  return rankModels(models, (l) => {
+    if (TEXT_ONLY_MODEL_HINTS.some((h) => l.includes(h))) return 0;
+    if (VISION_MODEL_HINTS.some((h) => l.includes(h))) return 100;
+    return 50;
+  });
 }
 
 async function autoDiscoverModelsOnBoot(): Promise<void> {
@@ -141,7 +153,7 @@ app.get('/api/health', (req: Request, res: Response) => {
   res.json({
     status: 'ok',
     hasEnvKey: Boolean(process.env.GEMINI_API_KEY),
-    architecture: 'TOC index -> chapter routing -> physical slice -> provider-adapted stream',
+    architecture: 'TOC index -> chapter routing -> physical slice -> native PDF or page images -> stream',
   });
 });
 
@@ -165,13 +177,10 @@ function newBookId(): string {
 }
 
 function describeIngest(meta: BookMetadata): string {
-  const layer =
-    meta.textLayer === 'none'
-      ? '；⚠️ 检测为扫描版（无文字层），纯文本模型无法读取，建议改用 Gemini'
-      : meta.textLayer === 'sparse'
-      ? '；文字层较稀疏'
-      : '';
-  return `✅ 教材《${meta.name}》已完成本地目录索引（共 ${meta.pageCount} 页，${meta.toc.length} 条大纲，未消耗任何 Token）${layer}`;
+  if (meta.toc.length === 0) {
+    return `✅ 教材《${meta.name}》已载入（共 ${meta.pageCount} 页，未消耗任何 Token）；该书没有可解析的书签目录，将在首次提问时由模型视觉直读其印刷目录页`;
+  }
+  return `✅ 教材《${meta.name}》已完成本地目录索引（共 ${meta.pageCount} 页，${meta.toc.length} 条大纲，未消耗任何 Token）`;
 }
 
 /** Handles both single-shot and chunked uploads, then indexes the book locally. */
@@ -268,9 +277,10 @@ app.get('/api/books', async (req: Request, res: Response) => {
 
       meta.name = decodeOriginalFileName(meta.name);
 
-      // Indexes written before destination-aware outline parsing pointed every chapter
-      // at page 1; rebuild them once rather than routing against a broken index.
-      if (!meta.tocSource) {
+      // Older indexes are unusable in two ways: those written before destination-aware
+      // outline parsing point every chapter at page 1, and those marked 'synthesized'
+      // hold fabricated fixed-size chunks. Rebuild both rather than route against them.
+      if (!meta.tocSource || (meta.tocSource as string) === 'synthesized') {
         console.log(`[books] re-indexing legacy TOC for ${meta.id}`);
         meta = await ingestBook(pdfPath, meta.name, fs.statSync(pdfPath).size, meta.id);
         saveBookMetadata(meta);
@@ -320,7 +330,7 @@ app.post('/api/models/discover', async (req: Request, res: Response): Promise<vo
     } else {
       models = await discoverOpenAiModels(
         String(customKey || '').trim(),
-        String(customBaseUrl || 'https://api.deepseek.com/v1').trim()
+        String(customBaseUrl || DEFAULT_OPENAI_BASE_URL).trim()
       );
     }
 
@@ -378,7 +388,7 @@ app.post('/api/chat', async (req: Request, res: Response): Promise<void> => {
   try {
     const credentials = {
       apiKey: String(customApiKey || req.headers['x-gemini-api-key'] || process.env.GEMINI_API_KEY || '').trim(),
-      baseUrl: String(baseUrl || 'https://api.deepseek.com/v1').trim(),
+      baseUrl: String(baseUrl || DEFAULT_OPENAI_BASE_URL).trim(),
     };
 
     if (!credentials.apiKey) {
@@ -387,7 +397,7 @@ app.post('/api/chat', async (req: Request, res: Response): Promise<void> => {
         message:
           providerId === 'gemini'
             ? '缺少 Google Gemini API Key。'
-            : '缺少 OpenAI / DeepSeek 兼容协议 API Key。',
+            : '缺少 OpenAI / Claude 多模态兼容协议 API Key。',
         hint: '请在左侧配置面板填写有效的 API Key 后重试。',
       });
       return;
@@ -403,7 +413,24 @@ app.post('/api/chat', async (req: Request, res: Response): Promise<void> => {
       return;
     }
 
-    const mounted = loadMountedBooks(bookIds, books);
+    let mounted = loadMountedBooks(bookIds, books);
+
+    // ---- STAGE 1b: recover an outline by sight for books the file could not index ----
+    if (mounted.some((book) => book.toc.length === 0 && !book.visionIndexAttempted)) {
+      mounted = await Promise.all(
+        mounted.map(async (book) => {
+          if (book.toc.length > 0 || book.visionIndexAttempted) return book;
+          const recovered = await recoverOutlineWithVision({
+            book,
+            provider,
+            model: answerModel,
+            credentials,
+            channel,
+          });
+          return recovered ?? { ...book, visionIndexAttempted: true };
+        })
+      );
+    }
 
     // ---- STAGE 2: route the question against the TOC tree only ----
     let decision = null;
@@ -419,14 +446,18 @@ app.post('/api/chat', async (req: Request, res: Response): Promise<void> => {
       });
     }
 
-    // ---- STAGE 3: physically slice, then adapt to the provider ----
+    // ---- STAGE 3: physically slice, then render into the provider's visual format ----
     let excerpt = null;
     const routedBook = decision ? mounted.find((b) => b.id === decision!.bookId) : undefined;
 
     if (decision && routedBook) {
-      channel.stage('正在物理切取目标章节…');
+      channel.stage(
+        provider.excerptFormat === 'pdf'
+          ? '正在物理切取目标章节…'
+          : '正在物理切取目标章节并渲染为高精度页面影像…'
+      );
       try {
-        excerpt = await prepareExcerpt(decision, routedBook, provider, channel);
+        excerpt = await prepareExcerpt(decision, routedBook, provider);
       } catch (err) {
         console.warn('[chat] slicing failed, answering without textbook context:', err);
         channel.notice('warn', '教材切片失败，本轮将以通识推导作答。');
@@ -441,7 +472,7 @@ app.post('/api/chat', async (req: Request, res: Response): Promise<void> => {
             startPage: excerpt.pageRange[0],
             endPage: excerpt.pageRange[1],
             contextTokens: excerpt.estimatedTokens,
-            payload: provider.acceptsPdf ? 'pdf' : 'text',
+            payload: provider.excerptFormat,
             label: `${prefix}：《${decision.bookName}》${decision.chapterTitle} (P${excerpt.pageRange[0]} - P${excerpt.pageRange[1]})`,
           },
         });

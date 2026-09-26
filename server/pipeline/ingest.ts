@@ -1,7 +1,7 @@
 import fs from 'fs';
 import { PDFDocument } from 'pdf-lib';
-import { probeTextLayer, withPdfDocument } from '../pdf/document';
-import { extractOutline, synthesizeOutline } from '../pdf/outline';
+import { withPdfDocument } from '../pdf/document';
+import { extractOutline } from '../pdf/outline';
 import { BookMetadata } from '../pdf/storage';
 
 /**
@@ -48,9 +48,11 @@ function formatUploadTime(): string {
 }
 
 /**
- * Builds the local index for one textbook: page count, chapter outline, and whether a
- * text-only model will be able to read it. This index is the only thing consulted when
- * routing a question.
+ * Builds the local index for one textbook: page count and chapter outline. This index is
+ * the only thing consulted when routing a question.
+ *
+ * A book whose outline cannot be read from the file is stored with an empty one; the
+ * chat pipeline then has the model read its printed contents page on first use.
  */
 export async function ingestBook(
   filePath: string,
@@ -61,20 +63,17 @@ export async function ingestBook(
   const rawBuffer = fs.readFileSync(filePath);
   const pageCount = await resolvePageCount(rawBuffer, fileSize);
 
-  let toc = synthesizeOutline(pageCount);
-  let tocSource: BookMetadata['tocSource'] = 'synthesized';
-  let textLayer: BookMetadata['textLayer'] = 'none';
+  let toc: BookMetadata['toc'] = [];
+  let tocSource: BookMetadata['tocSource'] = 'none';
 
   try {
     await withPdfDocument(rawBuffer, async (doc) => {
-      const pages = doc.numPages || pageCount;
-      textLayer = await probeTextLayer(doc, pages);
-      const outline = await extractOutline(doc, pages);
+      const outline = await extractOutline(doc, doc.numPages || pageCount);
       toc = outline.toc;
       tocSource = outline.source;
     });
   } catch (err) {
-    console.warn('[ingest] document unreadable, falling back to even chunks:', err);
+    console.warn('[ingest] outline pass failed, leaving index empty for visual reading:', err);
   }
 
   return {
@@ -85,6 +84,5 @@ export async function ingestBook(
     toc,
     uploadTime: formatUploadTime(),
     tocSource,
-    textLayer,
   };
 }
