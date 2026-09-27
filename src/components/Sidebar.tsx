@@ -1,25 +1,6 @@
 import React, { useState } from 'react';
-import {
-  BookOpen,
-  KeyRound,
-  UploadCloud,
-  FileText,
-  Trash2,
-  RotateCcw,
-  Eye,
-  EyeOff,
-  RefreshCw,
-  AlertTriangle,
-  Globe,
-  Loader2,
-  AlertCircle,
-  Zap,
-  CheckCircle2,
-  Server,
-  Cpu,
-  Check
-} from 'lucide-react';
-import { MountedBook, GeminiModelType, ApiProviderType } from '../types';
+import { Trash2, RotateCcw, Eye, EyeOff, RefreshCw, Loader2 } from 'lucide-react';
+import { MountedBook, ApiProviderType } from '../types';
 
 interface SidebarProps {
   provider: ApiProviderType;
@@ -272,126 +253,92 @@ export const Sidebar: React.FC<SidebarProps> = ({
     { label: '本地 Ollama', url: 'http://localhost:11434/v1' },
   ];
 
-  return (
-    <aside className="w-80 md:w-88 flex flex-col bg-slate-900 text-slate-100 border-r border-slate-800 shrink-0 h-full select-none overflow-hidden">
-      {/* Brand Header */}
-      <div className="p-4 border-b border-slate-800 bg-slate-950/40">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2.5">
-            <div className="p-2 rounded-lg bg-blue-600/20 text-blue-400 border border-blue-500/30">
-              <BookOpen className="w-5 h-5" />
-            </div>
-            <h1 className="text-sm font-semibold tracking-wide text-white">
-              教材伴读助手
-            </h1>
-          </div>
-          <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300 font-mono border border-emerald-500/30 flex items-center gap-1">
-            <Zap className="w-2.5 h-2.5" /> 全模态直读
-          </span>
-        </div>
-      </div>
+  const tocLabel = (source?: string) => {
+    if (source === 'bookmarks') return '书签';
+    if (source === 'text-scan') return '正文目录';
+    if (source === 'vision') return '视觉目录';
+    if (source === 'synthesized') return '按页分块';
+    return '已索引';
+  };
 
-      {/* Scrollable Configuration Sections */}
-      <div className="flex-1 overflow-y-auto p-4 space-y-5 text-sm">
-        {/* 1. Provider Toggle (服务商模式切换) */}
+  return (
+    <aside className="w-72 flex flex-col bg-zinc-950 text-zinc-200 border-r border-zinc-800 shrink-0 h-full select-none overflow-hidden">
+      <div className="flex-1 overflow-y-auto px-4 py-4 space-y-5 text-sm">
         <div className="space-y-2">
-          <label className="text-xs font-semibold text-slate-300 flex items-center justify-between">
-            <span className="flex items-center gap-1.5">
-              <Globe className="w-3.5 h-3.5 text-blue-400" />
-              服务商模式切换 (Provider)
-            </span>
-            <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-500/20 text-blue-300 font-mono">
-              仅多模态
-            </span>
-          </label>
-          <div className="grid grid-cols-2 gap-1.5 p-1 bg-slate-950/70 rounded-lg border border-slate-800">
+          <label className="text-xs text-zinc-500">通道</label>
+          <div className="grid grid-cols-2 gap-1">
             <button
               type="button"
               onClick={() => onProviderChange('gemini')}
-              className={`py-1.5 px-2 rounded-md text-xs font-medium transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+              className={`py-1.5 rounded text-xs cursor-pointer ${
                 provider === 'gemini'
-                  ? 'bg-blue-600 text-white shadow-xs font-semibold'
-                  : 'text-slate-400 hover:text-slate-200'
+                  ? 'bg-zinc-100 text-zinc-950'
+                  : 'text-zinc-500 hover:text-zinc-100 hover:bg-zinc-900'
               }`}
             >
-              <span>🌐 Google Gemini 官方</span>
+              Gemini
             </button>
             <button
               type="button"
               onClick={() => onProviderChange('openai_compatible')}
-              className={`py-1.5 px-2 rounded-md text-xs font-medium transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+              className={`py-1.5 rounded text-xs cursor-pointer ${
                 provider === 'openai_compatible'
-                  ? 'bg-indigo-600 text-white shadow-xs font-semibold'
-                  : 'text-slate-400 hover:text-slate-200'
+                  ? 'bg-zinc-100 text-zinc-950'
+                  : 'text-zinc-500 hover:text-zinc-100 hover:bg-zinc-900'
               }`}
             >
-              <span>⚡ OpenAI / Claude</span>
+              OpenAI
             </button>
           </div>
         </div>
 
-        {/* 2. Dynamic Input Fields based on Provider */}
         {provider === 'gemini' ? (
-          /* Google Gemini Mode Inputs */
-          <div className="space-y-2 p-3 rounded-xl bg-slate-800/60 border border-slate-750">
-            <label className="text-xs font-semibold text-slate-300 flex items-center justify-between">
-              <span className="flex items-center gap-1.5">
-                <KeyRound className="w-3.5 h-3.5 text-amber-400" />
-                Google Gemini API Key
+          <div className="space-y-2">
+            <label className="text-xs text-zinc-500 flex items-center justify-between">
+              <span>API Key</span>
+              <span className="text-[11px] text-zinc-400">
+                {geminiApiKey ? '已填写' : '可用环境变量'}
               </span>
-              {geminiApiKey ? (
-                <span className="text-[11px] text-emerald-400 flex items-center gap-1">
-                  <CheckCircle2 className="w-3 h-3" /> 自定义Key
-                </span>
-              ) : (
-                <span className="text-[11px] text-slate-400">使用环境变量</span>
-              )}
             </label>
             <div className="relative">
               <input
                 type={showKey ? 'text' : 'password'}
                 value={geminiApiKey}
                 onChange={(e) => onGeminiApiKeyChange(e.target.value)}
-                placeholder="默认使用系统 GEMINI_API_KEY (可覆盖)"
-                className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-hidden focus:ring-2 focus:ring-blue-500 focus:border-transparent font-mono pr-9"
+                placeholder="GEMINI_API_KEY"
+                className="w-full bg-zinc-900 border border-zinc-800 rounded px-3 py-2 text-xs text-zinc-100 placeholder-zinc-600 focus:outline-hidden focus:border-zinc-600 font-mono pr-9"
               />
               <button
                 type="button"
                 onClick={() => setShowKey(!showKey)}
-                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-200 transition-colors cursor-pointer"
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-200 cursor-pointer"
               >
                 {showKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
               </button>
             </div>
-            <p className="text-[11px] text-slate-400 leading-tight">
-              直连 Google 官方端点，章节切片以原生 PDF 直读版面。推荐 gemini-1.5-flash / gemini-1.5-pro。
-            </p>
           </div>
         ) : (
-          /* OpenAI / Claude multimodal-compatible endpoint inputs */
-          <div className="space-y-3 p-3 rounded-xl bg-slate-800/60 border border-slate-750">
+          <div className="space-y-3">
             <div className="space-y-1.5">
-              <label className="text-xs font-semibold text-slate-300 flex items-center justify-between">
-                <span className="flex items-center gap-1.5">
-                  <Server className="w-3.5 h-3.5 text-indigo-400" />
-                  API 基础地址 (Base URL)
-                </span>
-              </label>
+              <label className="text-xs text-zinc-500">Base URL</label>
               <input
                 type="text"
                 value={openaiBaseUrl}
                 onChange={(e) => onOpenaiBaseUrlChange(e.target.value)}
                 placeholder="https://api.openai.com/v1"
-                className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-hidden focus:ring-2 focus:ring-indigo-500 font-mono"
+                className="w-full bg-zinc-900 border border-zinc-800 rounded px-3 py-2 text-xs text-zinc-100 placeholder-zinc-600 focus:outline-hidden focus:border-zinc-600 font-mono"
               />
-              {/* Quick URL Preset Pills */}
-              <div className="flex flex-wrap gap-1 pt-1">
+              <div className="flex flex-wrap gap-1">
                 {URL_PRESETS.map((p) => (
                   <button
                     key={p.url}
                     type="button"
                     onClick={() => onOpenaiBaseUrlChange(p.url)}
-                    className="text-[10px] px-2 py-0.5 rounded bg-slate-900 hover:bg-slate-750 text-slate-300 border border-slate-700 transition-colors cursor-pointer"
+                    className={`text-[11px] px-1.5 py-0.5 rounded cursor-pointer ${
+                      openaiBaseUrl === p.url
+                        ? 'bg-zinc-100 text-zinc-950'
+                        : 'text-zinc-500 hover:text-zinc-200 hover:bg-zinc-900'
+                    }`}
                   >
                     {p.label}
                   </button>
@@ -400,126 +347,88 @@ export const Sidebar: React.FC<SidebarProps> = ({
             </div>
 
             <div className="space-y-1.5">
-              <label className="text-xs font-semibold text-slate-300 flex items-center justify-between">
-                <span className="flex items-center gap-1.5">
-                  <KeyRound className="w-3.5 h-3.5 text-amber-400" />
-                  API Key (Bearer Token)
-                </span>
-                {openaiApiKey ? (
-                  <span className="text-[11px] text-emerald-400 flex items-center gap-1">
-                    <CheckCircle2 className="w-3 h-3" /> 已填写
-                  </span>
-                ) : (
-                  <span className="text-[11px] text-rose-400">必填</span>
-                )}
+              <label className="text-xs text-zinc-500 flex items-center justify-between">
+                <span>API Key</span>
+                <span className="text-[11px] text-zinc-400">{openaiApiKey ? '已填写' : '必填'}</span>
               </label>
               <div className="relative">
                 <input
                   type={showKey ? 'text' : 'password'}
                   value={openaiApiKey}
                   onChange={(e) => onOpenaiApiKeyChange(e.target.value)}
-                  placeholder="sk-xxxxxxxxxxxxxxxxxxxxxxxx"
-                  className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-hidden focus:ring-2 focus:ring-indigo-500 font-mono pr-9"
+                  placeholder="sk-..."
+                  className="w-full bg-zinc-900 border border-zinc-800 rounded px-3 py-2 text-xs text-zinc-100 placeholder-zinc-600 focus:outline-hidden focus:border-zinc-600 font-mono pr-9"
                 />
                 <button
                   type="button"
                   onClick={() => setShowKey(!showKey)}
-                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-200 transition-colors cursor-pointer"
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-200 cursor-pointer"
                 >
                   {showKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                 </button>
               </div>
             </div>
-            <p className="text-[11px] text-slate-400 leading-tight">
-              章节切片渲染为高精度页面影像后直送模型。请选择具备视觉能力的模型，推荐 gpt-4o / gpt-4o-mini / claude-3-5-sonnet。
-            </p>
           </div>
         )}
 
-        {/* 3. Dynamic Model Discovery & Dropdown Engine (动态模型探测引擎与下拉框) */}
-        <div className="p-3 rounded-xl bg-slate-800/80 border border-slate-700/80 space-y-3 shadow-xs">
+        <div className="space-y-2">
           <div className="flex items-center justify-between">
-            <label className="text-xs font-bold text-white flex items-center gap-1.5">
-              <Cpu className="w-4 h-4 text-blue-400" />
-              自适应模型下拉引擎
-            </label>
-            <span className="text-[10px] px-2 py-0.5 rounded-full bg-slate-700 text-slate-300 font-mono">
-              {discoveredModels.length > 0 ? `${discoveredModels.length} 个可用` : '待探测'}
+            <label className="text-xs text-zinc-500">模型</label>
+            <span className="text-[11px] text-zinc-400">
+              {discoveredModels.length > 0 ? `${discoveredModels.length} 个` : ''}
             </span>
           </div>
-
-          {/* Discovery Action Button */}
           <button
             type="button"
             onClick={onDiscoverModels}
             disabled={isDiscoveringModels}
-            className="w-full py-2 px-3 rounded-lg bg-blue-600 hover:bg-blue-500 text-white font-medium text-xs transition-colors flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 shadow-xs"
+            className="w-full py-1.5 rounded bg-zinc-100 hover:bg-zinc-200 text-zinc-950 text-xs cursor-pointer disabled:opacity-50 flex items-center justify-center gap-1.5"
           >
             <RefreshCw className={`w-3.5 h-3.5 ${isDiscoveringModels ? 'animate-spin' : ''}`} />
-            <span>
-              {isDiscoveringModels ? '正在拉取当前 Key 授权的可用模型...' : '🔄 自动检测可用模型'}
-            </span>
+            {isDiscoveringModels ? '检测中…' : '检测可用模型'}
           </button>
-
-          {/* Discovery Status Banner if present */}
           {discoveryStatus && (
-            <div
-              className={`p-2 rounded text-[11px] flex items-start gap-1.5 ${
-                discoveryStatus.type === 'success'
-                  ? 'bg-emerald-950/40 text-emerald-300 border border-emerald-800/40'
-                  : 'bg-rose-950/40 text-rose-300 border border-rose-800/40'
+            <p
+              className={`text-[11px] leading-snug ${
+                discoveryStatus.type === 'success' ? 'text-zinc-500' : 'text-red-400'
               }`}
             >
-              {discoveryStatus.type === 'success' ? (
-                <Check className="w-3.5 h-3.5 text-emerald-400 shrink-0 mt-0.5" />
-              ) : (
-                <AlertTriangle className="w-3.5 h-3.5 text-rose-400 shrink-0 mt-0.5" />
-              )}
-              <span className="leading-snug">{discoveryStatus.message}</span>
-            </div>
+              {discoveryStatus.message}
+            </p>
           )}
-
-          {/* Adaptive Graphical Model Dropdown */}
-          <div className="space-y-1.5">
-            <span className="text-[11px] text-slate-400 block font-medium">
-              当前调用模型 (由真实 API 动态供给):
-            </span>
-            <select
-              value={selectedModel}
-              onChange={(e) => onModelChange(e.target.value)}
-              className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-2 text-xs text-white focus:outline-hidden focus:ring-2 focus:ring-blue-500 font-mono truncate"
-            >
-              {discoveredModels.length > 0 ? (
-                discoveredModels.map((m) => (
-                  <option key={m} value={m} className="bg-slate-900 text-white">
-                    {m}
-                  </option>
-                ))
-              ) : (
-                <option value={selectedModel}>{selectedModel || '暂无模型，请点击检测'}</option>
-              )}
-            </select>
-          </div>
-
-          <div className="text-[10px] text-slate-400 flex items-center justify-between pt-0.5">
-            <span>选定: <strong className="text-blue-300 font-mono">{selectedModel}</strong></span>
-            <span className="text-slate-500">自动持久化</span>
-          </div>
+          <select
+            value={selectedModel}
+            onChange={(e) => onModelChange(e.target.value)}
+            className="w-full bg-zinc-900 border border-zinc-800 rounded px-2.5 py-2 text-xs text-zinc-100 focus:outline-hidden focus:border-zinc-600 font-mono truncate"
+          >
+            {discoveredModels.length > 0 ? (
+              discoveredModels.map((m) => (
+                <option key={m} value={m}>
+                  {m}
+                </option>
+              ))
+            ) : (
+              <option value={selectedModel}>{selectedModel || '请先检测模型'}</option>
+            )}
+          </select>
         </div>
 
-        {/* 3. Textbook Cloud Mount (File Uploader with Resilient Chunking) */}
-        <div className="space-y-2.5">
+        <div className="space-y-2">
           <div className="flex items-center justify-between">
-            <label className="text-xs font-semibold text-slate-300 flex items-center gap-1.5">
-              <UploadCloud className="w-3.5 h-3.5 text-cyan-400" />
-              教材挂载 (PDF 教科书)
-            </label>
-            <span className="text-[11px] text-slate-400 font-mono">
-              {mountedBooks.length} 本已载入
-            </span>
+            <label className="text-xs text-zinc-500">教材</label>
+            <div className="flex items-center gap-2">
+              <span className="text-[11px] text-zinc-400">{mountedBooks.length} 本</span>
+              {mountedBooks.length > 0 && (
+                <button
+                  onClick={onClearAllBooks}
+                  className="text-[11px] text-zinc-400 hover:text-zinc-100 cursor-pointer"
+                >
+                  清空
+                </button>
+              )}
+            </div>
           </div>
 
-          {/* Upload Area */}
           <div
             onDragOver={handleDragOver}
             onDragLeave={handleDragLeave}
@@ -529,12 +438,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 fileInputRef.current.click();
               }
             }}
-            className={`border-2 border-dashed rounded-xl p-3.5 flex flex-col items-center justify-center transition-all cursor-pointer select-none ${
+            className={`border border-dashed rounded p-3 flex flex-col items-center justify-center cursor-pointer ${
               isDragging
-                ? 'border-cyan-400 bg-cyan-950/40 ring-2 ring-cyan-500/30'
+                ? 'border-zinc-500 bg-zinc-900'
                 : isUploading
-                ? 'border-blue-500/60 bg-blue-950/30 cursor-wait'
-                : 'border-slate-700/80 hover:border-blue-500/70 hover:bg-slate-800/40 bg-slate-800/25'
+                ? 'border-zinc-700 bg-zinc-900 cursor-wait'
+                : 'border-zinc-700 hover:border-zinc-500 hover:bg-zinc-900'
             }`}
           >
             <input
@@ -547,139 +456,70 @@ export const Sidebar: React.FC<SidebarProps> = ({
             />
 
             {isUploading ? (
-              <div className="w-full space-y-2 py-1">
-                <div className="flex items-center justify-between text-xs">
-                  <span className="font-medium text-blue-300 flex items-center gap-1.5 truncate pr-2">
-                    <Loader2 className="w-3.5 h-3.5 animate-spin text-blue-400 shrink-0" />
-                    <span className="truncate">{uploadStatusText || '传输中...'}</span>
+              <div className="w-full space-y-2">
+                <div className="flex items-center justify-between text-xs text-zinc-400">
+                  <span className="flex items-center gap-1.5 truncate pr-2">
+                    <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
+                    <span className="truncate">{uploadStatusText || '上传中…'}</span>
                   </span>
-                  <span className="font-mono text-cyan-400 text-xs font-semibold shrink-0">
-                    {uploadProgress}%
-                  </span>
+                  <span className="font-mono shrink-0">{uploadProgress}%</span>
                 </div>
-
-                {/* Progress bar */}
-                <div className="w-full bg-slate-800 rounded-full h-2 overflow-hidden border border-slate-700/60">
+                <div className="w-full bg-zinc-800 h-1 overflow-hidden">
                   <div
-                    className="bg-gradient-to-r from-blue-500 to-cyan-400 h-full rounded-full transition-all duration-300 ease-out"
+                    className="bg-zinc-100 h-full transition-all duration-300"
                     style={{ width: `${Math.max(5, uploadProgress)}%` }}
                   />
                 </div>
-
-                <div className="text-[10px] text-slate-400 flex items-center justify-between">
-                  <span>标准 PDF 教材直接入库</span>
-                  <span className="text-slate-400">大纲秒级解析</span>
-                </div>
               </div>
             ) : (
-              <>
-                <UploadCloud
-                  className={`w-6 h-6 mb-1 transition-transform ${
-                    isDragging ? 'scale-110 text-cyan-400' : 'text-slate-400'
-                  }`}
-                />
-                <span className="text-xs font-medium text-slate-200 text-center">
-                  {isDragging ? '松开鼠标立即挂载教材' : '点击或拖拽上传 PDF 教材'}
-                </span>
-                <span className="text-[10px] text-slate-400 mt-0.5 text-center">
-                  支持多本教材，自动索引大纲
-                </span>
-              </>
+              <span className="text-xs text-zinc-500">
+                {isDragging ? '松开以上传' : '上传 PDF'}
+              </span>
             )}
           </div>
 
-          {/* Upload Error Banner */}
           {uploadError && (
-            <div className="p-2.5 rounded-lg bg-red-950/50 border border-red-800/80 text-xs text-red-200 flex items-start gap-2 animate-in fade-in duration-200">
-              <AlertCircle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
-              <div className="flex-1 min-w-0">
-                <p className="font-medium text-[11px] leading-snug">{uploadError}</p>
-                <div className="mt-1 flex items-center gap-2">
-                  <button
-                    onClick={() => {
-                      setUploadError(null);
-                      if (fileInputRef.current) fileInputRef.current.click();
-                    }}
-                    className="text-[11px] text-red-300 hover:text-white underline cursor-pointer"
-                  >
-                    重试上传
-                  </button>
-                  <button
-                    onClick={() => setUploadError(null)}
-                    className="text-[11px] text-slate-400 hover:text-slate-200 cursor-pointer"
-                  >
-                    忽略
-                  </button>
-                </div>
+            <div className="text-xs text-red-400 space-y-1">
+              <p className="leading-snug">{uploadError}</p>
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={() => {
+                    setUploadError(null);
+                    if (fileInputRef.current) fileInputRef.current.click();
+                  }}
+                  className="text-[11px] underline cursor-pointer"
+                >
+                  重试
+                </button>
+                <button
+                  onClick={() => setUploadError(null)}
+                  className="text-[11px] text-zinc-500 hover:text-zinc-200 cursor-pointer"
+                >
+                  忽略
+                </button>
               </div>
             </div>
           )}
 
-          {/* Mounted Books List */}
           {mountedBooks.length > 0 && (
-            <div className="space-y-2 mt-3">
-              <div className="flex items-center justify-between text-xs text-slate-400">
-                <span className="font-semibold text-slate-300">已挂载教材库</span>
-                <button
-                  onClick={onClearAllBooks}
-                  className="text-red-400 hover:text-red-300 text-[11px] flex items-center gap-0.5 cursor-pointer"
-                >
-                  <Trash2 className="w-3 h-3" /> 清空
-                </button>
-              </div>
-
-              <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
+            <div className="space-y-1">
+              <div className="space-y-1 max-h-48 overflow-y-auto">
                 {mountedBooks.map((book) => (
-                  <div
-                    key={book.id}
-                    className="p-2.5 rounded-md bg-slate-800/80 border border-slate-700/80 flex items-center justify-between group"
-                  >
-                    <div className="overflow-hidden pr-2">
-                      <div className="font-medium text-xs text-slate-200 truncate flex items-center gap-1.5">
-                        <FileText className="w-3.5 h-3.5 text-blue-400 shrink-0" />
-                        <span className="truncate">{book.name}</span>
-                      </div>
-                      <div className="text-[10px] text-slate-400 flex items-center gap-2 mt-1">
-                        <span>{book.sizeMb} MB</span>
-                        {book.pageCount ? (
-                          <>
-                            <span>•</span>
-                            <span>{book.pageCount} 页</span>
-                          </>
-                        ) : null}
-                        <span>•</span>
-                        {book.tocSource === 'synthesized' ? (
-                          <span className="text-amber-300 flex items-center gap-0.5">
-                            <span className="w-1.5 h-1.5 rounded-full bg-amber-400 inline-block"></span>
-                            等距逻辑块
-                          </span>
-                        ) : (
-                          <span className="text-emerald-400 flex items-center gap-0.5">
-                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 inline-block animate-pulse"></span>
-                            {book.tocSource === 'bookmarks'
-                              ? '书签目录已索引'
-                              : book.tocSource === 'text-scan'
-                              ? '正文目录已识别'
-                              : book.tocSource === 'vision'
-                              ? '视觉识别目录已缓存'
-                              : 'TOC大纲已索引'}
-                          </span>
-                        )}
+                  <div key={book.id} className="py-2 flex items-start justify-between gap-2 group">
+                    <div className="min-w-0">
+                      <div className="text-xs text-zinc-200 truncate">{book.name}</div>
+                      <div className="text-[11px] text-zinc-400 mt-0.5">
+                        {book.pageCount ? `${book.pageCount} 页 · ` : ''}
+                        {tocLabel(book.tocSource)}
                       </div>
                       {book.tocSource === 'synthesized' && (
-                        <div
-                          className="mt-1 text-[10px] text-amber-300/90 flex items-start gap-1 leading-snug"
-                          title="既没有电子书签，也未能识别出印刷目录，已按每 30 页划分逻辑块；章节定位精度会下降"
-                        >
-                          <AlertTriangle className="w-3 h-3 shrink-0 mt-px" />
-                          <span>未识别到目录 · 已按每 30 页分块</span>
-                        </div>
+                        <div className="mt-0.5 text-[11px] text-zinc-500">未识别目录，按每 30 页分块</div>
                       )}
                     </div>
                     <button
                       onClick={() => onRemoveBook(book.id)}
-                      className="text-slate-500 hover:text-red-400 p-1 rounded opacity-60 group-hover:opacity-100 transition-opacity cursor-pointer"
-                      title="卸载该教材"
+                      className="text-zinc-600 hover:text-zinc-200 p-0.5 cursor-pointer shrink-0"
+                      title="移除"
                     >
                       <Trash2 className="w-3 h-3" />
                     </button>
@@ -691,18 +531,17 @@ export const Sidebar: React.FC<SidebarProps> = ({
         </div>
       </div>
 
-      {/* Footer Reset Action */}
-      <div className="p-3 border-t border-slate-800 bg-slate-950/60 flex items-center justify-between">
-        <div className="text-[11px] text-slate-400 flex items-center gap-1">
-          <Globe className="w-3.5 h-3.5 text-blue-400" />
-          <span>{provider === 'gemini' ? 'Google 官方直连' : 'OpenAI / Claude 多模态'}</span>
-        </div>
+      <div className="px-4 py-3 border-t border-zinc-800 flex items-center justify-between">
+        <span className="text-[11px] text-zinc-500">
+          {provider === 'gemini' ? 'Gemini · PDF' : 'OpenAI · 图像'}
+        </span>
         <button
           onClick={onResetChat}
-          className="text-xs bg-slate-800 hover:bg-slate-700 text-slate-200 px-2.5 py-1.5 rounded-md flex items-center gap-1 transition-colors cursor-pointer"
-          title="重置当前问答对话"
+          className="text-xs text-zinc-500 hover:text-zinc-100 flex items-center gap-1 cursor-pointer"
+          title="清空当前对话"
         >
-          <RotateCcw className="w-3.5 h-3.5" /> 重置对话
+          <RotateCcw className="w-3.5 h-3.5" />
+          重置
         </button>
       </div>
     </aside>

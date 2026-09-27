@@ -1,22 +1,4 @@
 import React, { useState, useEffect, useRef } from 'react';
-import {
-  Play,
-  Download,
-  FileCode,
-  Terminal,
-  RefreshCw,
-  CheckCircle2,
-  AlertTriangle,
-  FileText,
-  Copy,
-  Check,
-  Maximize2,
-  ChevronDown,
-  ChevronUp,
-  HelpCircle,
-  ExternalLink,
-  Sparkles
-} from 'lucide-react';
 import { LatexCompileResponse } from '../types';
 import { jsPDF } from 'jspdf';
 import { PdfPreview } from './PdfPreview';
@@ -240,235 +222,143 @@ export const LatexStudio: React.FC<LatexStudioProps> = ({
   };
 
   return (
-    <div className="flex-1 flex flex-col h-full bg-slate-950 text-slate-100 overflow-hidden font-sans">
-      {/* Top Workbench Toolbar (VS Code / Overleaf Style) */}
-      <div className="h-12 border-b border-slate-800 bg-slate-900 px-4 flex items-center justify-between shrink-0 select-none z-10">
-        <div className="flex items-center gap-3">
-          <div className="flex items-center gap-2">
-            <span className="w-2.5 h-2.5 rounded-full bg-indigo-500 animate-pulse"></span>
-            <span className="font-semibold text-white text-xs tracking-wide flex items-center gap-1.5">
-              <FileCode className="w-4 h-4 text-indigo-400" />
-              LaTeX 实时编译与 PDF 双联预览室
-            </span>
-          </div>
-
-          <div className="h-4 w-px bg-slate-700"></div>
-
-          {/* Engine Status Badge */}
+    <div className="flex-1 flex flex-col h-full bg-zinc-950 text-zinc-100 overflow-hidden font-sans">
+      <div className="h-11 border-b border-zinc-800 px-4 flex items-center justify-between shrink-0 select-none">
+        <div className="flex items-center gap-3 text-xs text-zinc-500">
+          <span className="text-zinc-200">LaTeX</span>
           {engineStatus && (
-            <div
-              className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] font-mono border ${
-                engineStatus.installed
-                  ? 'bg-emerald-950/80 text-emerald-300 border-emerald-700/60'
-                  : 'bg-amber-950/80 text-amber-300 border-amber-700/60'
-              }`}
-              title={engineStatus.installed ? 'XeLaTeX 原生引擎正常在线' : '未检测到系统 xelatex，已自动启动自适应优雅降级'}
-            >
-              <span className={`w-1.5 h-1.5 rounded-full ${engineStatus.installed ? 'bg-emerald-400' : 'bg-amber-400'}`}></span>
-              <span>XeLaTeX: {engineStatus.installed ? '已就绪 (原生)' : '未安装 (优雅降级)'}</span>
-            </div>
+            <span title={engineStatus.installed ? 'XeLaTeX 可用' : '未检测到 xelatex，将使用降级方案'}>
+              {engineStatus.installed ? 'XeLaTeX' : '未安装 XeLaTeX'}
+            </span>
           )}
         </div>
 
-        {/* 4 Core Action Buttons */}
-        <div className="flex items-center gap-2">
-          {/* Button 1: Compile & Refresh PDF */}
+        <div className="flex items-center gap-1">
           <button
             onClick={handleCompile}
             disabled={isCompiling}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-indigo-600 hover:bg-indigo-500 disabled:bg-indigo-800 text-white text-xs font-semibold shadow-sm transition-all cursor-pointer"
-            title="使用后台 XeLaTeX 编译当前代码并刷新右侧高清矢量 PDF"
+            className="px-2.5 py-1 rounded text-xs bg-zinc-100 hover:bg-zinc-200 disabled:opacity-50 text-zinc-950 cursor-pointer"
+            title="编译并刷新预览"
           >
-            {isCompiling ? (
-              <>
-                <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                <span>正在编译...</span>
-              </>
-            ) : (
-              <>
-                <Play className="w-3.5 h-3.5 fill-current" />
-                <span>⚡ 编译并刷新 PDF</span>
-              </>
-            )}
+            {isCompiling ? '编译中…' : '编译'}
           </button>
-
-          {/* Button 2: Download PDF */}
           <button
             onClick={handleDownloadPdf}
             disabled={!pdfBase64}
-            className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-all ${
+            className={`px-2.5 py-1 rounded text-xs ${
               pdfBase64
-                ? 'bg-emerald-700 hover:bg-emerald-600 text-white shadow-xs cursor-pointer'
-                : 'bg-slate-800 text-slate-500 cursor-not-allowed border border-slate-700/50'
+                ? 'text-zinc-300 hover:bg-zinc-900 cursor-pointer'
+                : 'text-zinc-700 cursor-not-allowed'
             }`}
-            title={pdfBase64 ? '下载已编译生成的高清矢量 PDF 文件' : '请先点击编译生成 PDF'}
+            title={pdfBase64 ? '下载 PDF' : '请先编译'}
           >
-            <Download className="w-3.5 h-3.5" />
-            <span>📥 下载高清 PDF</span>
+            PDF
           </button>
-
-          {/* Button 3: Download .tex source */}
           <button
             onClick={handleDownloadTex}
-            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium border border-slate-700 transition-colors cursor-pointer"
-            title="将当前编辑区的 LaTeX 源码保存为 document.tex"
+            className="px-2.5 py-1 rounded text-xs text-zinc-300 hover:bg-zinc-900 cursor-pointer"
+            title="下载 document.tex"
           >
-            <FileText className="w-3.5 h-3.5 text-blue-400" />
-            <span>💾 下载 .tex 源码</span>
+            .tex
           </button>
-
-          {/* Button 4: View Compilation Logs */}
           <button
             onClick={() => setShowLogDrawer((prev) => !prev)}
-            className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium border transition-colors cursor-pointer ${
-              showLogDrawer
-                ? 'bg-slate-700 text-white border-slate-600'
-                : 'bg-slate-800 hover:bg-slate-700 text-slate-300 border-slate-700'
+            className={`px-2.5 py-1 rounded text-xs cursor-pointer ${
+              showLogDrawer ? 'bg-zinc-800 text-zinc-100' : 'text-zinc-300 hover:bg-zinc-900'
             }`}
-            title="展开/折叠显示 XeLaTeX 控制台编译诊断日志"
+            title="编译日志"
           >
-            <Terminal className="w-3.5 h-3.5 text-amber-400" />
-            <span>📜 查看编译日志</span>
-            {showLogDrawer ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+            日志
           </button>
         </div>
       </div>
 
       {/* Warning / Notification Banner */}
       {compileError && (
-        <div className="bg-amber-950/90 border-b border-amber-800/80 px-4 py-2 text-xs text-amber-200 flex items-center justify-between shrink-0">
-          <div className="flex items-center gap-2">
-            <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
-            <span>{compileError}</span>
-          </div>
+        <div className="border-b border-zinc-800 px-4 py-2 text-xs text-red-400 flex items-center justify-between shrink-0">
+          <span>{compileError}</span>
           <button
             onClick={() => setShowLogDrawer(true)}
-            className="text-amber-300 underline hover:text-amber-100 font-mono text-[11px] shrink-0"
+            className="text-zinc-500 hover:text-zinc-200 text-[11px] shrink-0 cursor-pointer"
           >
-            查看详情
+            日志
           </button>
         </div>
       )}
 
       {compileSuccessNotice && (
-        <div className="bg-emerald-950/90 border-b border-emerald-800/80 px-4 py-2 text-xs text-emerald-200 flex items-center gap-2 shrink-0 animate-fade-in">
-          <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
-          <span>⚡ XeLaTeX 编译成功！右侧已刷新高清矢量 PDF 预览视图。</span>
+        <div className="border-b border-zinc-800 px-4 py-2 text-xs text-zinc-500 shrink-0">
+          编译完成
         </div>
       )}
 
       {/* Dual Pane Main Area (50% / 50% split) */}
       <div className="flex-1 flex flex-col md:flex-row overflow-hidden relative">
-        {/* Left Half: LaTeX Source Code Editor */}
-        <div className="w-full md:w-1/2 flex flex-col border-r border-slate-800 bg-slate-950 h-1/2 md:h-full overflow-hidden">
-          {/* Editor Header Sub-bar */}
-          <div className="h-8 bg-slate-900/90 border-b border-slate-800 px-3 flex items-center justify-between text-xs text-slate-400 shrink-0">
-            <div className="flex items-center gap-2 font-mono text-[11px]">
-              <span className="text-slate-200 font-medium">document.tex</span>
-              <span className="text-slate-600">|</span>
-              <span>UTF-8</span>
-              <span className="text-slate-600">|</span>
-              <span>ctexart (中文学术模板)</span>
-            </div>
-
-            <div className="flex items-center gap-2">
+        <div className="w-full md:w-1/2 flex flex-col border-r border-zinc-800 bg-zinc-950 h-1/2 md:h-full overflow-hidden">
+          <div className="h-8 border-b border-zinc-800 px-3 flex items-center justify-between text-xs text-zinc-500 shrink-0">
+            <span className="font-mono text-[11px] text-zinc-400">document.tex</span>
+            <div className="flex items-center gap-3">
               <button
                 onClick={handleCopyTex}
-                className="hover:text-slate-200 flex items-center gap-1 text-[11px] transition-colors cursor-pointer"
-                title="复制代码到剪贴板"
+                className="hover:text-zinc-200 text-[11px] cursor-pointer"
               >
-                {copiedTex ? (
-                  <>
-                    <Check className="w-3 h-3 text-emerald-400" />
-                    <span className="text-emerald-400">已复制</span>
-                  </>
-                ) : (
-                  <>
-                    <Copy className="w-3 h-3" />
-                    <span>复制代码</span>
-                  </>
-                )}
+                {copiedTex ? '已复制' : '复制'}
               </button>
-              <span className="text-slate-600">|</span>
               <button
                 onClick={handleResetTemplate}
-                className="hover:text-slate-200 text-[11px] transition-colors cursor-pointer"
-                title="恢复为初始默认论文模板"
+                className="hover:text-zinc-200 text-[11px] cursor-pointer"
+                title="恢复默认模板"
               >
-                重置模板
+                重置
               </button>
             </div>
           </div>
 
-          {/* Textarea Editor */}
-          <div className="flex-1 relative overflow-hidden flex bg-slate-950">
+          <div className="flex-1 relative overflow-hidden flex">
             <textarea
               ref={textareaRef}
               value={latexCode}
               onChange={(e) => onLatexCodeChange(e.target.value)}
               onKeyDown={handleKeyDown}
               spellCheck={false}
-              className="w-full h-full p-4 bg-transparent text-slate-200 font-mono text-xs md:text-[13px] leading-relaxed resize-none focus:outline-hidden selection:bg-indigo-900/60"
-              placeholder="% 请在此输入或粘贴标准 LaTeX 源码..."
+              className="w-full h-full p-4 bg-zinc-950 text-zinc-200 font-mono text-xs md:text-[13px] leading-relaxed resize-none focus:outline-hidden"
+              placeholder="% LaTeX"
             />
           </div>
         </div>
 
-        {/* Right Half: Real-time PDF Vector Previewer */}
-        <div className="w-full md:w-1/2 flex flex-col bg-slate-900 h-1/2 md:h-full overflow-hidden">
-          {/* Previewer Header Sub-bar */}
-          <div className="h-8 bg-slate-900/90 border-b border-slate-800 px-3 flex items-center justify-between text-xs text-slate-400 shrink-0">
-            <div className="flex items-center gap-2">
-              <span className="w-2 h-2 rounded-full bg-blue-500"></span>
-              <span className="text-slate-200 font-medium text-[11px]">PDF 实时预览视图 (矢量无损)</span>
-            </div>
-
-            <div className="flex items-center gap-3 text-[11px]">
-              {pdfBase64 && (
-                <button
-                  onClick={handleDownloadPdf}
-                  className="hover:text-slate-200 flex items-center gap-1 transition-colors cursor-pointer text-blue-400"
-                >
-                  <Download className="w-3 h-3" />
-                  <span>导出本地</span>
-                </button>
-              )}
-            </div>
+        <div className="w-full md:w-1/2 flex flex-col bg-zinc-950 h-1/2 md:h-full overflow-hidden">
+          <div className="h-8 border-b border-zinc-800 px-3 flex items-center justify-between text-xs text-zinc-500 shrink-0 bg-zinc-950">
+            <span className="text-[11px] text-zinc-400">预览</span>
+            {pdfBase64 && (
+              <button
+                onClick={handleDownloadPdf}
+                className="hover:text-zinc-200 text-[11px] cursor-pointer"
+              >
+                下载
+              </button>
+            )}
           </div>
 
-          {/* Preview Container */}
-          <div className="flex-1 bg-slate-900 flex items-center justify-center relative overflow-hidden">
+          <div className="flex-1 bg-zinc-950 flex items-center justify-center relative overflow-hidden">
             {pdfBase64 ? (
               <PdfPreview base64={pdfBase64} />
             ) : (
-              /* Sleek VS Code / Overleaf Style Placeholder */
-              <div className="max-w-md text-center p-6 rounded-xl border border-slate-800 bg-slate-950/60 shadow-xl">
-                <div className="w-12 h-12 rounded-xl bg-indigo-950 text-indigo-400 flex items-center justify-center mx-auto mb-3 border border-indigo-800/60 shadow-inner">
-                  <FileCode className="w-6 h-6" />
-                </div>
-                <h3 className="text-sm font-semibold text-slate-200 mb-1">
-                  VS Code + LaTeX Workshop 风格双联预览
-                </h3>
-                <p className="text-xs text-slate-400 leading-relaxed mb-4">
-                  请在左侧编辑器中修改 LaTeX 代码，或在「💬 教材伴读答疑」中点击{' '}
-                  <span className="text-indigo-400 font-mono">📌 导入至 LaTeX 排版室</span>。
-                  <br />
-                  点击上方 <span className="text-indigo-400 font-semibold">⚡ 编译并刷新 PDF</span>，右侧将无缝呈现原生高清矢量 PDF。
-                </p>
+              <div className="max-w-sm text-center px-6">
+                <p className="text-xs text-zinc-500 mb-4">编译左侧源码，或从答疑导入回答。</p>
                 <div className="flex items-center justify-center gap-2">
                   <button
                     onClick={handleCompile}
                     disabled={isCompiling}
-                    className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-md bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-medium shadow-sm transition-all cursor-pointer"
+                    className="px-3 py-1.5 rounded bg-zinc-100 text-zinc-950 text-xs cursor-pointer"
                   >
-                    <Play className="w-3.5 h-3.5 fill-current" />
-                    <span>立即触发初次编译</span>
+                    编译
                   </button>
                   <button
                     onClick={onSwitchToChat}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-medium border border-slate-700 transition-colors cursor-pointer"
+                    className="px-3 py-1.5 rounded text-xs text-zinc-400 hover:text-zinc-100 cursor-pointer"
                   >
-                    <span>返回伴读答疑</span>
+                    返回答疑
                   </button>
                 </div>
               </div>
@@ -479,21 +369,18 @@ export const LatexStudio: React.FC<LatexStudioProps> = ({
 
       {/* Bottom Collapsible Compilation Log Drawer */}
       {showLogDrawer && (
-        <div className="h-52 border-t border-slate-800 bg-slate-950 flex flex-col shrink-0 z-20 shadow-2xl">
-          <div className="h-7 bg-slate-900 px-3 flex items-center justify-between text-xs text-slate-400 border-b border-slate-800 select-none">
-            <div className="flex items-center gap-2 font-mono text-[11px]">
-              <Terminal className="w-3 h-3 text-amber-400" />
-              <span>XeLaTeX 终端控制台输出日志</span>
-            </div>
+        <div className="h-44 border-t border-zinc-800 bg-zinc-950 flex flex-col shrink-0">
+          <div className="h-7 px-3 flex items-center justify-between text-xs text-zinc-500 border-b border-zinc-800 select-none">
+            <span className="text-[11px]">编译日志</span>
             <button
               onClick={() => setShowLogDrawer(false)}
-              className="text-slate-400 hover:text-slate-200 text-xs cursor-pointer"
+              className="hover:text-zinc-200 text-xs cursor-pointer"
             >
-              ✕ 关闭日志
+              关闭
             </button>
           </div>
-          <div className="flex-1 p-3 font-mono text-xs text-slate-300 overflow-y-auto bg-black/80 whitespace-pre-wrap leading-relaxed">
-            {compileLog || '暂无编译输出日志。点击上方 [⚡ 编译并刷新 PDF] 即可查看实时无头进程输出。'}
+          <div className="flex-1 p-3 font-mono text-xs text-zinc-400 overflow-y-auto whitespace-pre-wrap leading-relaxed">
+            {compileLog || '尚无输出。'}
           </div>
         </div>
       )}

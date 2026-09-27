@@ -1,1 +1,16 @@
 @import "tailwindcss";
+
+:root {
+  color-scheme: dark;
+}
+
+html,
+body,
+#root {
+  background: #09090b;
+  color: #fafafa;
+}
+
+.katex {
+  color: inherit;
+}

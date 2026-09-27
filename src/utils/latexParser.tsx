@@ -28,22 +28,22 @@ export const FormattedMathContent: React.FC<MathRendererProps> = ({ content }) =
         const headerRow = tableRows[0];
         const bodyRows = tableRows.slice(1);
         elements.push(
-          <div key={key} className="overflow-x-auto my-3 border border-slate-200 rounded-lg shadow-xs">
-            <table className="min-w-full divide-y divide-slate-200 text-sm">
-              <thead className="bg-slate-100 font-semibold text-slate-800">
+          <div key={key} className="overflow-x-auto my-3 border border-zinc-800 rounded">
+            <table className="min-w-full divide-y divide-zinc-800 text-sm">
+              <thead className="bg-zinc-900 font-semibold text-zinc-100">
                 <tr>
                   {headerRow.map((cell, cIdx) => (
-                    <th key={cIdx} className="px-3 py-2 text-left border-r border-slate-200 last:border-r-0">
+                    <th key={cIdx} className="px-3 py-2 text-left border-r border-zinc-800 last:border-r-0">
                       {renderInlineMath(cell.trim())}
                     </th>
                   ))}
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-200 bg-white">
+              <tbody className="divide-y divide-zinc-800 bg-zinc-950">
                 {bodyRows.map((row, rIdx) => (
-                  <tr key={rIdx} className={rIdx % 2 === 0 ? 'bg-white' : 'bg-slate-50/50'}>
+                  <tr key={rIdx} className={rIdx % 2 === 0 ? 'bg-zinc-950' : 'bg-zinc-900/60'}>
                     {row.map((cell, cIdx) => (
-                      <td key={cIdx} className="px-3 py-2 text-slate-700 border-r border-slate-200 last:border-r-0">
+                      <td key={cIdx} className="px-3 py-2 text-zinc-300 border-r border-zinc-800 last:border-r-0">
                         {renderInlineMath(cell.trim())}
                       </td>
                     ))}
@@ -96,7 +96,7 @@ export const FormattedMathContent: React.FC<MathRendererProps> = ({ content }) =
         elements.push(
           <div
             key={`block-math-${i}`}
-            className="my-3 py-2 px-3 bg-slate-50 border border-slate-200 rounded-md overflow-x-auto text-center"
+            className="my-3 py-2 px-3 bg-zinc-900 border border-zinc-800 rounded overflow-x-auto text-center text-zinc-100"
             dangerouslySetInnerHTML={{ __html: mathHtml }}
           />
         );
@@ -106,7 +106,7 @@ export const FormattedMathContent: React.FC<MathRendererProps> = ({ content }) =
       // Headings
       if (line.startsWith('### ')) {
         elements.push(
-          <h4 key={`h4-${i}`} className="text-base font-bold text-slate-900 mt-4 mb-1">
+          <h4 key={`h4-${i}`} className="text-base font-bold text-zinc-100 mt-4 mb-1">
             {renderInlineMath(line.replace('### ', ''))}
           </h4>
         );
@@ -114,7 +114,7 @@ export const FormattedMathContent: React.FC<MathRendererProps> = ({ content }) =
       }
       if (line.startsWith('## ')) {
         elements.push(
-          <h3 key={`h3-${i}`} className="text-lg font-bold text-slate-900 mt-5 mb-2 pb-1 border-b border-slate-200">
+          <h3 key={`h3-${i}`} className="text-lg font-bold text-zinc-100 mt-5 mb-2 pb-1 border-b border-zinc-800">
             {renderInlineMath(line.replace('## ', ''))}
           </h3>
         );
@@ -122,7 +122,7 @@ export const FormattedMathContent: React.FC<MathRendererProps> = ({ content }) =
       }
       if (line.startsWith('# ')) {
         elements.push(
-          <h2 key={`h2-${i}`} className="text-xl font-bold text-slate-900 mt-6 mb-2">
+          <h2 key={`h2-${i}`} className="text-xl font-bold text-zinc-100 mt-6 mb-2">
             {renderInlineMath(line.replace('# ', ''))}
           </h2>
         );
@@ -132,7 +132,7 @@ export const FormattedMathContent: React.FC<MathRendererProps> = ({ content }) =
       // Blockquote
       if (line.startsWith('> ')) {
         elements.push(
-          <blockquote key={`bq-${i}`} className="border-l-4 border-blue-500 bg-blue-50/60 py-1.5 px-3 rounded-r my-2 text-slate-700 text-sm">
+          <blockquote key={`bq-${i}`} className="border-l-2 border-zinc-600 py-1.5 px-3 my-2 text-zinc-300 text-sm">
             {renderInlineMath(line.replace('> ', ''))}
           </blockquote>
         );
@@ -142,8 +142,8 @@ export const FormattedMathContent: React.FC<MathRendererProps> = ({ content }) =
       // Unordered List
       if (line.trim().startsWith('- ') || line.trim().startsWith('* ')) {
         elements.push(
-          <div key={`li-${i}`} className="flex items-start gap-2 my-1 text-sm text-slate-800 leading-relaxed">
-            <span className="text-blue-500 font-bold mt-1">•</span>
+          <div key={`li-${i}`} className="flex items-start gap-2 my-1 text-sm text-zinc-200 leading-relaxed">
+            <span className="text-zinc-500 font-bold mt-1">•</span>
             <div className="flex-1">{renderInlineMath(line.trim().replace(/^[-*]\s+/, ''))}</div>
           </div>
         );
@@ -154,8 +154,8 @@ export const FormattedMathContent: React.FC<MathRendererProps> = ({ content }) =
       const olMatch = line.trim().match(/^(\d+)\.\s+(.*)$/);
       if (olMatch) {
         elements.push(
-          <div key={`ol-${i}`} className="flex items-start gap-2 my-1 text-sm text-slate-800 leading-relaxed">
-            <span className="text-blue-600 font-semibold text-xs mt-0.5 bg-blue-100 px-1.5 py-0.5 rounded">
+          <div key={`ol-${i}`} className="flex items-start gap-2 my-1 text-sm text-zinc-200 leading-relaxed">
+            <span className="text-zinc-400 font-semibold text-xs mt-0.5 bg-zinc-900 px-1.5 py-0.5 rounded">
               {olMatch[1]}
             </span>
             <div className="flex-1">{renderInlineMath(olMatch[2])}</div>
@@ -172,7 +172,7 @@ export const FormattedMathContent: React.FC<MathRendererProps> = ({ content }) =
 
       // Regular paragraph
       elements.push(
-        <p key={`p-${i}`} className="my-1.5 text-sm text-slate-800 leading-relaxed">
+        <p key={`p-${i}`} className="my-1.5 text-sm text-zinc-200 leading-relaxed">
           {renderInlineMath(line)}
         </p>
       );
@@ -211,12 +211,12 @@ export const FormattedMathContent: React.FC<MathRendererProps> = ({ content }) =
         parts.push(
           <span
             key={`math-${match.index}`}
-            className={isDisplay ? 'block my-1 text-center font-serif' : 'inline-block px-1 font-serif text-slate-900'}
+            className={isDisplay ? 'block my-1 text-center font-serif' : 'inline-block px-1 font-serif text-zinc-100'}
             dangerouslySetInnerHTML={{ __html: rendered }}
           />
         );
       } catch {
-        parts.push(<code key={`math-err-${match.index}`} className="text-xs bg-slate-100 px-1 py-0.5 rounded">{formula}</code>);
+        parts.push(<code key={`math-err-${match.index}`} className="text-xs bg-zinc-900 px-1 py-0.5 rounded">{formula}</code>);
       }
 
       lastIndex = match.index + rawFormula.length;
@@ -243,13 +243,13 @@ export const FormattedMathContent: React.FC<MathRendererProps> = ({ content }) =
       const token = match[0];
       if (token.startsWith('**')) {
         pieces.push(
-          <strong key={`${keyPrefix}-b-${match.index}`} className="font-bold text-slate-900">
+          <strong key={`${keyPrefix}-b-${match.index}`} className="font-bold text-zinc-100">
             {token.slice(2, -2)}
           </strong>
         );
       } else if (token.startsWith('`')) {
         pieces.push(
-          <code key={`${keyPrefix}-c-${match.index}`} className="bg-slate-100 text-blue-700 px-1.5 py-0.5 rounded text-xs font-mono font-medium">
+          <code key={`${keyPrefix}-c-${match.index}`} className="bg-zinc-900 text-zinc-200 px-1.5 py-0.5 rounded text-xs font-mono font-medium">
             {token.slice(1, -1)}
           </code>
         );

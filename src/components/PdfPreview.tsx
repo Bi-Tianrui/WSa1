@@ -76,7 +76,7 @@ export const PdfPreview: React.FC<PdfPreviewProps> = ({ base64 }) => {
           canvas.height = Math.floor(viewport.height);
           canvas.style.width = `${Math.floor(base.width * scale)}px`;
           canvas.style.height = `${Math.floor(base.height * scale)}px`;
-          canvas.className = 'block mx-auto mb-3 bg-white shadow-lg';
+          canvas.className = 'block mx-auto mb-3 bg-white border border-zinc-800';
           canvas.setAttribute('aria-label', `第 ${pageNumber} 页`);
 
           const ctx = canvas.getContext('2d');
@@ -128,14 +128,14 @@ export const PdfPreview: React.FC<PdfPreviewProps> = ({ base64 }) => {
   }, [base64]);
 
   return (
-    <div ref={wrapRef} className="relative w-full h-full bg-slate-800/40">
+    <div ref={wrapRef} className="relative w-full h-full bg-zinc-950">
       {status === 'loading' && (
-        <div className="absolute inset-0 z-10 flex items-center justify-center text-xs text-slate-400 pointer-events-none">
-          正在渲染预览…
+        <div className="absolute inset-0 z-10 flex items-center justify-center text-xs text-zinc-500 pointer-events-none">
+          渲染中…
         </div>
       )}
       {status === 'error' && (
-        <div className="absolute inset-0 z-10 flex items-center justify-center px-6 text-center text-xs text-rose-300">
+        <div className="absolute inset-0 z-10 flex items-center justify-center px-6 text-center text-xs text-red-400">
           {error}
         </div>
       )}

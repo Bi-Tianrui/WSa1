@@ -6,7 +6,7 @@ import { LatexStudio, DEFAULT_ACADEMIC_LATEX_TEMPLATE } from './components/Latex
 import { ChatMessage, MountedBook, ApiProviderType, ModelDiscoveryResponse, StreamNotice } from './types';
 import { markdownToLatexDocument } from './utils/markdownToLatex';
 import { isRetiredGeminiFlash, isUnusableReadingModel, pickPreferredModel } from '../server/models';
-import { Terminal, MessageSquare, FileCode, Sparkles, Cpu, RefreshCw, Globe, Zap, Check } from 'lucide-react';
+import { Terminal, MessageSquare, FileCode, RefreshCw } from 'lucide-react';
 
 export default function App() {
   const [activeView, setActiveView] = useState<'chat' | 'latex' | 'code'>('chat');
@@ -455,99 +455,78 @@ export default function App() {
   };
 
   return (
-    <div className="flex flex-col h-screen w-screen overflow-hidden bg-slate-100 font-sans">
-      {/* Top Application Bar */}
-      <nav className="h-11 bg-slate-950 border-b border-slate-800 px-3 md:px-4 flex items-center justify-between shrink-0 select-none z-20">
-        <div className="flex items-center gap-3">
-          <div className="flex items-center gap-1.5">
-            <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse"></span>
-            <span className="text-white text-xs font-bold tracking-wide">
-              理工科教材伴读助手
-            </span>
-          </div>
+    <div className="flex flex-col h-screen w-screen overflow-hidden bg-zinc-950 font-sans text-zinc-100">
+      <nav className="h-11 bg-zinc-950 border-b border-zinc-800 px-4 flex items-center justify-between shrink-0 select-none z-20">
+        <div className="flex items-center gap-3 min-w-0">
+          <span className="text-sm font-medium tracking-tight shrink-0 text-zinc-100">WSa1</span>
 
-          {/* Dynamic Model Dropdown Control in Navigation Bar */}
-          <div className="hidden lg:flex items-center gap-2 bg-slate-900 border border-slate-800 rounded-lg px-2.5 py-0.5 text-xs">
-            <span className="flex items-center gap-1 text-[11px] font-medium text-slate-300">
-              {provider === 'gemini' ? (
-                <Globe className="w-3.5 h-3.5 text-blue-400" />
-              ) : (
-                <Zap className="w-3.5 h-3.5 text-indigo-400" />
-              )}
-              <span className="font-mono">
-                {provider === 'gemini' ? 'Google 官方' : 'OpenAI / Claude'}
-              </span>
+          <div className="hidden lg:flex items-center gap-2 text-xs text-zinc-500">
+            <span className="text-zinc-500">
+              {provider === 'gemini' ? 'Gemini' : 'OpenAI'}
             </span>
-            <div className="h-3 w-px bg-slate-700"></div>
             <select
               value={selectedModel}
               onChange={(e) => handleModelChange(e.target.value)}
-              className="bg-transparent text-xs text-white font-mono border-none focus:outline-hidden cursor-pointer max-w-[180px] truncate"
-              title="当前调用的模型"
+              className="bg-transparent text-xs text-zinc-300 border-none focus:outline-hidden cursor-pointer max-w-[200px] truncate"
+              title="当前模型"
             >
               {discoveredModels.length > 0 ? (
                 discoveredModels.map((m) => (
-                  <option key={m} value={m} className="bg-slate-900 text-white font-mono">
+                  <option key={m} value={m}>
                     {m}
                   </option>
                 ))
               ) : (
-                <option value={selectedModel} className="bg-slate-900 text-white font-mono">
-                  {selectedModel}
-                </option>
+                <option value={selectedModel}>{selectedModel || '未选择模型'}</option>
               )}
             </select>
             <button
               type="button"
               onClick={() => handleDiscoverModels()}
               disabled={isDiscoveringModels}
-              className="p-0.5 text-slate-400 hover:text-white transition-colors cursor-pointer disabled:opacity-50"
-              title="刷新检测可用模型"
+              className="p-0.5 text-zinc-500 hover:text-zinc-200 transition-colors cursor-pointer disabled:opacity-50"
+              title="刷新模型列表"
             >
-              <RefreshCw className={`w-3.5 h-3.5 ${isDiscoveringModels ? 'animate-spin text-blue-400' : ''}`} />
+              <RefreshCw className={`w-3.5 h-3.5 ${isDiscoveringModels ? 'animate-spin' : ''}`} />
             </button>
           </div>
         </div>
 
-        {/* View Switcher Tabs */}
-        <div className="flex items-center gap-1 bg-slate-900 p-0.5 rounded-lg border border-slate-800">
+        <div className="flex items-center gap-0.5">
           <button
             onClick={() => setActiveView('chat')}
-            className={`px-3 py-1 rounded-md text-xs font-medium transition-colors flex items-center gap-1.5 cursor-pointer ${
+            className={`px-2.5 py-1 rounded text-xs transition-colors flex items-center gap-1.5 cursor-pointer ${
               activeView === 'chat'
-                ? 'bg-blue-600 text-white shadow-xs'
-                : 'text-slate-400 hover:text-slate-200'
+                ? 'bg-zinc-100 text-zinc-950'
+                : 'text-zinc-500 hover:text-zinc-100'
             }`}
           >
             <MessageSquare className="w-3.5 h-3.5" />
-            <span>💬 教材伴读答疑</span>
+            答疑
           </button>
-
           <button
             onClick={() => setActiveView('latex')}
-            className={`px-3 py-1 rounded-md text-xs font-medium transition-colors flex items-center gap-1.5 cursor-pointer relative ${
+            className={`px-2.5 py-1 rounded text-xs transition-colors flex items-center gap-1.5 cursor-pointer ${
               activeView === 'latex'
-                ? 'bg-indigo-600 text-white shadow-xs'
-                : 'text-slate-400 hover:text-slate-200'
+                ? 'bg-zinc-100 text-zinc-950'
+                : hasImportedLatex
+                ? 'text-zinc-200'
+                : 'text-zinc-500 hover:text-zinc-100'
             }`}
           >
             <FileCode className="w-3.5 h-3.5" />
-            <span>📐 LaTeX 编译与 PDF 双联预览室</span>
-            {hasImportedLatex && (
-              <span className="w-2 h-2 rounded-full bg-amber-400 animate-ping absolute -top-0.5 -right-0.5"></span>
-            )}
+            LaTeX
           </button>
-
           <button
             onClick={() => setActiveView('code')}
-            className={`px-3 py-1 rounded-md text-xs font-medium transition-colors flex items-center gap-1.5 cursor-pointer ${
+            className={`px-2.5 py-1 rounded text-xs transition-colors flex items-center gap-1.5 cursor-pointer ${
               activeView === 'code'
-                ? 'bg-emerald-700 text-white shadow-xs'
-                : 'text-slate-400 hover:text-slate-200'
+                ? 'bg-zinc-100 text-zinc-950'
+                : 'text-zinc-500 hover:text-zinc-100'
             }`}
           >
             <Terminal className="w-3.5 h-3.5" />
-            <span>💻 Ubuntu 源码与脚本 (3个文件)</span>
+            源码
           </button>
         </div>
       </nav>
