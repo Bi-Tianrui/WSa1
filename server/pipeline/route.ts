@@ -1,4 +1,12 @@
-import { MAX_CATALOG_TOKENS, MAX_SLICE_PAGES, clampPageRange, estimateTokens } from '../budget';
+import {
+  MAX_CATALOG_TOKENS,
+  MAX_SLICE_PAGES,
+  MIN_USEFUL_SLICE_PAGES,
+  PREFERRED_SLICE_PAGES,
+  clampPageRange,
+  estimateTokens,
+} from '../budget';
+import { isRetiredGeminiFlash, isUnusableReadingModel } from '../models';
 import { TocItem } from '../pdf/outline';
 import { BookMetadata } from '../pdf/storage';
 import { ChatProvider, ProviderCredentials } from '../providers';
@@ -22,15 +30,20 @@ export interface RoutingDecision {
   source: 'model' | 'keyword';
 }
 
-/** Widens a thin section entry into a usable reading window, still under the page cap. */
+/** Widens a thin section, or trims a long one, into a 6–10 page reading window. */
 export function expandRange(
   startPage: number,
   endPage: number,
   totalPages: number
 ): [number, number] {
   const span = endPage - startPage + 1;
-  const target = span >= 8 ? endPage : startPage + MAX_SLICE_PAGES - 1;
-  return clampPageRange(startPage, Math.min(target, totalPages), totalPages);
+  if (span < MIN_USEFUL_SLICE_PAGES) {
+    return clampPageRange(startPage, startPage + PREFERRED_SLICE_PAGES - 1, totalPages);
+  }
+  if (span > PREFERRED_SLICE_PAGES) {
+    return clampPageRange(startPage, startPage + PREFERRED_SLICE_PAGES - 1, totalPages);
+  }
+  return clampPageRange(startPage, endPage, totalPages);
 }
 
 /**
@@ -114,20 +127,31 @@ export function matchChapterLocally(
   books: BookMetadata[]
 ): RoutingDecision | null {
   const promptTokens = tokenizeForMatching(prompt);
-  if (promptTokens.size === 0) return null;
+  const promptNorm = String(prompt || '').toLowerCase();
+  if (promptTokens.size === 0 && !promptNorm.trim()) return null;
 
   let best: (RoutingDecision & { score: number }) | null = null;
 
   for (const book of books) {
     for (const item of book.toc || []) {
       const titleTokens = tokenizeForMatching(item.title);
-      if (titleTokens.size === 0) continue;
 
       let overlap = 0;
       for (const token of titleTokens) if (promptTokens.has(token)) overlap++;
-      if (overlap === 0) continue;
 
-      const score = overlap / titleTokens.size;
+      const titleCore = item.title
+        .toLowerCase()
+        .replace(/^[\d.、\s]+/, '')
+        .replace(/^第?[0-9一二三四五六七八九十百]+章\s*/, '');
+      const phraseHit = titleCore.length >= 4 && promptNorm.includes(titleCore);
+
+      if (overlap === 0 && !phraseHit) continue;
+
+      // Ratio-only scoring lets a two-character title such as「几何」beat a full
+      // section heading that shares more tokens. Weight by how much actually overlapped,
+      // and boost an exact chapter-title phrase when the student named it.
+      const coverage = titleTokens.size ? overlap / titleTokens.size : 0;
+      const score = overlap * (0.5 + coverage) + (phraseHit ? Math.max(3, titleCore.length / 2) : 0);
       if (!best || score > best.score) {
         const [startPage, endPage] = expandRange(
           item.startPage,
@@ -148,7 +172,7 @@ export function matchChapterLocally(
     }
   }
 
-  if (!best || best.score < 0.34) return null;
+  if (!best || best.score < 1.2) return null;
   const { score, ...decision } = best;
   return decision;
 }
@@ -163,10 +187,13 @@ const SLOW_MODEL_HINTS = ['reason', 'thinking', 'r1', 'o1', 'o3', 'pro', 'opus',
  * reasoning pass when the user has selected something like deepseek-reasoner.
  */
 export function pickRoutingModel(candidates: string[], answerModel: string): string {
-  const usable = (candidates || []).filter(Boolean);
-  if (usable.length === 0) return answerModel;
+  const usable = (candidates || []).filter(
+    (name) => name && !isUnusableReadingModel(name) && !isRetiredGeminiFlash(name)
+  );
+  const pool = usable.length > 0 ? usable : (candidates || []).filter(Boolean);
+  if (pool.length === 0) return answerModel;
 
-  const fast = usable.find((name) => {
+  const fast = pool.find((name) => {
     const lowered = name.toLowerCase();
     return FAST_MODEL_HINTS.some((h) => lowered.includes(h)) && !SLOW_MODEL_HINTS.some((h) => lowered.includes(h));
   });
@@ -175,7 +202,7 @@ export function pickRoutingModel(candidates: string[], answerModel: string): str
   const answerIsSlow = SLOW_MODEL_HINTS.some((h) => answerModel.toLowerCase().includes(h));
   if (!answerIsSlow) return answerModel;
 
-  const notSlow = usable.find((name) => !SLOW_MODEL_HINTS.some((h) => name.toLowerCase().includes(h)));
+  const notSlow = pool.find((name) => !SLOW_MODEL_HINTS.some((h) => name.toLowerCase().includes(h)));
   return notSlow || answerModel;
 }
 

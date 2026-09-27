@@ -19,6 +19,7 @@ import {
 } from 'lucide-react';
 import { LatexCompileResponse } from '../types';
 import { jsPDF } from 'jspdf';
+import { PdfPreview } from './PdfPreview';
 
 interface LatexStudioProps {
   latexCode: string;
@@ -436,13 +437,9 @@ export const LatexStudio: React.FC<LatexStudioProps> = ({
           </div>
 
           {/* Preview Container */}
-          <div className="flex-1 bg-slate-900 flex items-center justify-center p-2 relative overflow-hidden">
+          <div className="flex-1 bg-slate-900 flex items-center justify-center relative overflow-hidden">
             {pdfBase64 ? (
-              <iframe
-                src={`data:application/pdf;base64,${pdfBase64}#toolbar=1&navpanes=1`}
-                className="w-full h-full rounded border border-slate-800 shadow-2xl bg-white"
-                title="LaTeX PDF Preview"
-              />
+              <PdfPreview base64={pdfBase64} />
             ) : (
               /* Sleek VS Code / Overleaf Style Placeholder */
               <div className="max-w-md text-center p-6 rounded-xl border border-slate-800 bg-slate-950/60 shadow-xl">

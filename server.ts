@@ -2,6 +2,7 @@ import express, { Request, Response } from 'express';
 import path from 'path';
 import fs from 'fs';
 import os from 'os';
+import { createRequire } from 'module';
 import { spawnSync } from 'child_process';
 import { createServer as createViteServer } from 'vite';
 import dotenv from 'dotenv';
@@ -19,6 +20,12 @@ import {
   saveBookMetadata,
 } from './server/pdf/storage';
 import { getProvider, normalizeProviderId, ProviderId } from './server/providers';
+import {
+  pickPreferredModel,
+  rankModels,
+  scoreGeminiModel,
+  scoreOpenAiCompatibleModel,
+} from './server/models';
 import { VisionContext, ingestBook } from './server/pipeline/ingest';
 import { pickRoutingModel, routeQuestion } from './server/pipeline/route';
 import { prepareExcerpt, streamAnswer } from './server/pipeline/answer';
@@ -28,6 +35,16 @@ dotenv.config();
 
 const PORT = 3000;
 const app = express();
+
+// Browser-side pdf.js preview fetches these to paint CJK (ctex / XeLaTeX) glyphs.
+const PDFJS_ASSET_ROOT = path.dirname(createRequire(import.meta.url).resolve('pdfjs-dist/package.json'));
+app.use('/pdfjs-assets/cmaps', express.static(path.join(PDFJS_ASSET_ROOT, 'cmaps'), { maxAge: '7d' }));
+app.use(
+  '/pdfjs-assets/standard_fonts',
+  express.static(path.join(PDFJS_ASSET_ROOT, 'standard_fonts'), { maxAge: '7d' })
+);
+app.use('/pdfjs-assets/wasm', express.static(path.join(PDFJS_ASSET_ROOT, 'wasm'), { maxAge: '7d' }));
+app.use('/pdfjs-assets/iccs', express.static(path.join(PDFJS_ASSET_ROOT, 'iccs'), { maxAge: '7d' }));
 
 /** Vision-capable by default; text-only endpoints cannot serve this pipeline. */
 const DEFAULT_OPENAI_BASE_URL = 'https://api.openai.com/v1';
@@ -43,15 +60,10 @@ const upload = multer({
 });
 
 const DEFAULT_SYSTEM_INSTRUCTION = `你是一位严谨、权威且富有耐心的大学理工科讲席教授（精通高等数学、线性代数、大学物理、理论力学、电磁学与电动力学、量子力学等硬核学科）。
-你的首要任务是结合用户上传或提问的大学教材，开展深度、精准的课业伴读、定理推演、概念剖析与课后习题精解。
+结合用户上传的教材与当前问题，做课业伴读、定理推演、概念剖析或习题精解。
 
-【回答核心准则】
-1. 【严格忠于学术严谨性】：回答必须清晰准确，定理条件不可遗漏。如有教材出处或章节定位，务必明确指引（如：『📖 出处：第 3 章 向量代数 / 第 85 页 定理 3.4』）。
-2. 【工科级详尽推导演绎】：
-   - 数学公式必须规范使用标准 LaTeX 语法：行内公式用单个 $ 包裹（如 $E=mc^2$）；独立行间公式使用双 $$ 包裹并单独成行。
-   - 推导过程步步清晰，绝不可省略关键步骤，清晰阐明每一步的数学变换依据、物理意义或几何直观。
-3. 【结构化表格与对比】：涉及多个物理量对比、公式汇总或判别准则对比时，必须优先整理为工整的 Markdown 表格，并标注物理量符号与 SI 单位。
-4. 【考点与易错点】：在末尾主动指出学生常见易错陷阱、边界情况及考前复习精要。`;
+按问题本身组织回答，不要套固定小节模板，也不要每次都用同一组标题收尾。只有用户明确问到考试、复习或易错点时，才单独写考点。
+定理条件不可漏。能定位到教材章节或页码时写明出处。公式用标准 LaTeX：行内 $...$，独立公式单独成行并用 $$...$$。推导写清变换依据。多个物理量对比时用 Markdown 表格并标注符号与 SI 单位。`;
 
 // ==========================================
 // MODEL DISCOVERY
@@ -62,19 +74,24 @@ const discoveredModelsCache: Record<ProviderId, string[]> = {
   openai_compatible: [],
 };
 
-/** Resolves the target model without hardcoding any vendor model name. */
-function resolveDynamicModel(requestedModel: unknown, provider: ProviderId): string {
-  if (typeof requestedModel === 'string' && requestedModel.trim()) return requestedModel.trim();
-  return discoveredModelsCache[provider]?.[0] || '';
+async function refreshModelCatalog(
+  providerId: ProviderId,
+  credentials: { apiKey: string; baseUrl: string }
+): Promise<string[]> {
+  const models =
+    providerId === 'gemini'
+      ? await discoverGeminiModels(credentials.apiKey)
+      : await discoverOpenAiModels(credentials.apiKey, credentials.baseUrl);
+  if (models.length > 0) discoveredModelsCache[providerId] = models;
+  return models;
 }
 
-function rankModels(models: string[], scorer: (lowered: string) => number): string[] {
-  return [...models].sort((a, b) => scorer(b.toLowerCase()) - scorer(a.toLowerCase()));
+/** Resolves the answering model against the just-verified catalog. */
+function resolveDynamicModel(requestedModel: unknown, catalog: string[]): string {
+  const requested = typeof requestedModel === 'string' ? requestedModel.trim() : '';
+  if (requested && catalog.includes(requested)) return requested;
+  return pickPreferredModel(catalog);
 }
-
-/** Model families that can read a page image, and families that provably cannot. */
-const VISION_MODEL_HINTS = ['4o', '4.1', 'o4', 'vision', 'sonnet', 'opus', 'haiku', 'vl', 'omni'];
-const TEXT_ONLY_MODEL_HINTS = ['deepseek-chat', 'deepseek-reasoner', 'embedding', 'rerank', 'tts', 'whisper', 'moderation'];
 
 async function discoverGeminiModels(apiKey: string): Promise<string[]> {
   const url = `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}`;
@@ -96,7 +113,7 @@ async function discoverGeminiModels(apiKey: string): Promise<string[]> {
     .filter((m: any) => Array.isArray(m.supportedGenerationMethods) && m.supportedGenerationMethods.includes('generateContent'))
     .map((m: any) => m.name.replace(/^models\//, ''));
 
-  return rankModels(models, (l) => (l.includes('flash') ? 100 : l.includes('pro') ? 80 : 50));
+  return rankModels(models, scoreGeminiModel);
 }
 
 async function discoverOpenAiModels(apiKey: string, baseUrl: string): Promise<string[]> {
@@ -122,13 +139,7 @@ async function discoverOpenAiModels(apiKey: string, baseUrl: string): Promise<st
     new Set(raw.map((item: any) => (typeof item === 'string' ? item : item.id || item.name)).filter(Boolean))
   ) as string[];
 
-  // Pages reach this channel as images, so vision-capable models are ranked to the top
-  // and known text-only families are pushed to the bottom.
-  return rankModels(models, (l) => {
-    if (TEXT_ONLY_MODEL_HINTS.some((h) => l.includes(h))) return 0;
-    if (VISION_MODEL_HINTS.some((h) => l.includes(h))) return 100;
-    return 50;
-  });
+  return rankModels(models, scoreOpenAiCompatibleModel);
 }
 
 async function autoDiscoverModelsOnBoot(): Promise<void> {
@@ -204,7 +215,7 @@ function visionContextFromRequest(body: any): VisionContext | null {
   ).trim();
   if (!apiKey) return null;
 
-  const model = resolveDynamicModel(body?.model, providerId);
+  const model = resolveDynamicModel(body?.model, discoveredModelsCache[providerId] || []);
   if (!model) return null;
 
   return {
@@ -435,14 +446,31 @@ app.post('/api/chat', async (req: Request, res: Response): Promise<void> => {
       return;
     }
 
-    const answerModel = resolveDynamicModel(model, providerId);
+    channel.stage('正在验证 API Key、Base URL 与可用模型…');
+    let catalog: string[];
+    try {
+      catalog = await refreshModelCatalog(providerId, credentials);
+    } catch (err: any) {
+      channel.fail({
+        code: 'auth',
+        message: '发问前未能验证 API Key 或 Base URL。',
+        hint: err?.message || '请确认密钥、中转地址，以及该地址是否提供 /v1/models。',
+      });
+      return;
+    }
+
+    const requested = typeof model === 'string' ? model.trim() : '';
+    const answerModel = resolveDynamicModel(model, catalog);
     if (!answerModel) {
       channel.fail({
         code: 'not_found',
-        message: '尚未选择可用的模型。',
-        hint: '请点击左侧「刷新探测」拉取模型列表，并在下拉框中选择一个模型。',
+        message: '当前密钥下没有可用于阅读教材的模型。',
+        hint: '请更换具备视觉能力的模型，或检查中转站是否开放了对应通道。',
       });
       return;
+    }
+    if (requested && requested !== answerModel) {
+      channel.notice('info', `所选模型「${requested}」当前不可用或不宜阅读教材，已改用 ${answerModel}。`);
     }
 
     let mounted = loadMountedBooks(bookIds, books);

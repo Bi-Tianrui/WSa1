@@ -6,8 +6,17 @@
  * whole textbook, at ingest time or at question time.
  */
 
-/** Maximum physical pages that may ever be sliced out for one turn. */
-export const MAX_SLICE_PAGES = 30;
+/**
+ * Hard cap on pages in one excerpt. Thin TOC hits are expanded toward
+ * PREFERRED_SLICE_PAGES rather than this ceiling.
+ */
+export const MAX_SLICE_PAGES = 10;
+
+/** Expand a one-line TOC hit to this many pages so the model sees a little context. */
+export const PREFERRED_SLICE_PAGES = 10;
+
+/** Do not bother expanding a range that already covers at least this many pages. */
+export const MIN_USEFUL_SLICE_PAGES = 6;
 
 /** Maximum textbook context tokens injected into one request. */
 export const MAX_CONTEXT_TOKENS = 25_000;

@@ -266,6 +266,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   // Only endpoints that serve vision-capable models belong here.
   const URL_PRESETS = [
     { label: 'OpenAI 官方', url: 'https://api.openai.com/v1' },
+    { label: 'XBCL 中转', url: 'https://xbcl.link/v1' },
     { label: 'Anthropic 兼容', url: 'https://api.anthropic.com/v1' },
     { label: 'OpenRouter', url: 'https://openrouter.ai/api/v1' },
     { label: '本地 Ollama', url: 'http://localhost:11434/v1' },

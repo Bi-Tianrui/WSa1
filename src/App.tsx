@@ -5,6 +5,7 @@ import { SourceCodeViewer } from './components/SourceCodeViewer';
 import { LatexStudio, DEFAULT_ACADEMIC_LATEX_TEMPLATE } from './components/LatexStudio';
 import { ChatMessage, MountedBook, ApiProviderType, ModelDiscoveryResponse, StreamNotice } from './types';
 import { markdownToLatexDocument } from './utils/markdownToLatex';
+import { isRetiredGeminiFlash, isUnusableReadingModel, pickPreferredModel } from '../server/models';
 import { Terminal, MessageSquare, FileCode, Sparkles, Cpu, RefreshCw, Globe, Zap, Check } from 'lucide-react';
 
 export default function App() {
@@ -56,9 +57,12 @@ export default function App() {
   const [hasImportedLatex, setHasImportedLatex] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
 
-  // Dynamic Model Discovery Execution
   const handleDiscoverModels = useCallback(
-    async (targetProvider?: ApiProviderType, targetKey?: string, targetUrl?: string) => {
+    async (
+      targetProvider?: ApiProviderType,
+      targetKey?: string,
+      targetUrl?: string
+    ): Promise<{ ok: boolean; model: string; error?: string }> => {
       const p = targetProvider ?? provider;
       const k = targetKey ?? (p === 'gemini' ? geminiApiKey : openaiApiKey);
       const u = targetUrl ?? openaiBaseUrl;
@@ -85,26 +89,29 @@ export default function App() {
         setDiscoveredModels(data.models);
         localStorage.setItem(`discovered_models_${p}`, JSON.stringify(data.models));
 
-        // Auto-select dynamically discovered top model if current selection isn't valid
+        const preferred = pickPreferredModel(data.models);
         let active = selectedModel;
-        if (!active || !data.models.includes(active)) {
-          active = data.models[0] || '';
+        if (
+          !active ||
+          !data.models.includes(active) ||
+          isUnusableReadingModel(active) ||
+          isRetiredGeminiFlash(active)
+        ) {
+          active = preferred;
           setSelectedModel(active);
-          if (active) {
-            localStorage.setItem(`selected_model_${p}`, active);
-          }
+          if (active) localStorage.setItem(`selected_model_${p}`, active);
         }
 
         setDiscoveryStatus({
           type: 'success',
           message: `已探测到 ${data.models.length} 个可用模型 (首选: ${active})`,
         });
+        return { ok: true, model: active };
       } catch (err: any) {
         console.error('Model discovery error:', err);
-        setDiscoveryStatus({
-          type: 'error',
-          message: err?.message || '探测失败，请检查网络或密钥配置',
-        });
+        const message = err?.message || '探测失败，请检查网络或密钥配置';
+        setDiscoveryStatus({ type: 'error', message });
+        return { ok: false, model: '', error: message };
       } finally {
         setIsDiscoveringModels(false);
       }
@@ -272,6 +279,13 @@ export default function App() {
 
     try {
       const activeKey = provider === 'gemini' ? geminiApiKey : openaiApiKey;
+      patchAssistant({ stage: '正在验证 API Key、Base URL 与可用模型…' });
+      const preflight = await handleDiscoverModels();
+      if (!preflight.ok) {
+        throw new Error(preflight.error || '发问前未能验证 API Key 或 Base URL');
+      }
+      const modelToUse = preflight.model || selectedModel;
+
       const response = await fetch('/api/chat', {
         method: 'POST',
         signal: controller.signal,
@@ -283,7 +297,7 @@ export default function App() {
         body: JSON.stringify({
           provider: provider,
           baseUrl: openaiBaseUrl || undefined,
-          model: selectedModel,
+          model: modelToUse,
           prompt: text,
           history: messages
             .filter((m) => !m.id.startsWith('sys-') && !m.isError && m.content && m.content.trim())
