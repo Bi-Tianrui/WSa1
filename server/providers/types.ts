@@ -1,7 +1,7 @@
 import { LlmFailure } from '../errors';
 import { PageImage } from '../pdf/raster';
 
-export type ProviderId = 'gemini' | 'openai_compatible';
+export type ProviderId = 'gemini' | 'openai_compatible' | 'qwen';
 
 /**
  * How a provider wants to receive pages.

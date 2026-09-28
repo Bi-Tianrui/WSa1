@@ -107,6 +107,10 @@ ${req.prompt}`,
         }
       }
     } catch (err) {
+      // The SDK sometimes throws while flushing the last SSE frame even after text
+      // has already been delivered. Keep the answer rather than failing the turn.
+      const raw = String((err as any)?.message || err || '');
+      if (produced && /incomplete json segment/i.test(raw)) return;
       throw new LlmFailureError(classifyThrownFailure(err));
     }
 

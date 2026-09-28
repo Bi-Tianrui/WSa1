@@ -46,6 +46,8 @@ export interface ChatMessage {
   stage?: string;
 }
 
+export type BookReadMode = 'chapter' | 'whole';
+
 export interface MountedBook {
   id: string;
   name: string;
@@ -55,10 +57,11 @@ export interface MountedBook {
   uploadTime: string;
   toc?: TocItem[];
   tocSource?: TocSource;
+  readMode?: BookReadMode;
 }
 
 export type GeminiModelType = string;
-export type ApiProviderType = 'gemini' | 'openai_compatible';
+export type ApiProviderType = 'gemini' | 'openai_compatible' | 'qwen';
 
 export interface ModelDiscoveryResponse {
   success: boolean;
@@ -67,6 +70,7 @@ export interface ModelDiscoveryResponse {
   error?: string;
   status?: number;
   message?: string;
+  baseUrl?: string;
 }
 
 export interface CodeFileMeta {

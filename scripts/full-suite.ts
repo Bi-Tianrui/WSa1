@@ -44,6 +44,7 @@ const CASES: Array<{ prompt: string; expectBook: string; expectTitle: string }> 
 async function testProvidersAndRouting() {
   record('provider.gemini', normalizeProviderId('gemini') === 'gemini' && getProvider('gemini').excerptFormat === 'pdf', 'excerptFormat=pdf');
   record('provider.openai', normalizeProviderId('openai_compatible') === 'openai_compatible' && getProvider('openai_compatible').excerptFormat === 'image', 'excerptFormat=image');
+  record('provider.qwen', normalizeProviderId('qwen') === 'qwen' && getProvider('qwen').excerptFormat === 'image', 'excerptFormat=image');
   record('provider.unknown-defaults-gemini', normalizeProviderId('nope') === 'gemini', '');
 
   record(

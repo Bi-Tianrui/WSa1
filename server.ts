@@ -16,19 +16,22 @@ import {
   deleteBook,
   getBookPath,
   listBookIndexFiles,
+  normalizeReadMode,
   readBookMetadata,
   saveBookMetadata,
 } from './server/pdf/storage';
-import { getProvider, normalizeProviderId, ProviderId } from './server/providers';
+import { getProvider, normalizeProviderId, ProviderId, DEFAULT_QWEN_BASE_URL, QWEN_COMPAT_BASE_URLS } from './server/providers';
 import {
+  isFragileRelayModel,
   pickPreferredModel,
   rankModels,
   scoreGeminiModel,
   scoreOpenAiCompatibleModel,
+  scoreQwenModel,
 } from './server/models';
 import { VisionContext, ingestBook } from './server/pipeline/ingest';
 import { pickRoutingModel, routeQuestion } from './server/pipeline/route';
-import { prepareExcerpt, streamAnswer } from './server/pipeline/answer';
+import { assembleReadingPayload, streamAnswer } from './server/pipeline/answer';
 import { needsDeferredVision, recoverOutlineWithVision } from './server/pipeline/visionIndex';
 
 dotenv.config();
@@ -72,24 +75,112 @@ const DEFAULT_SYSTEM_INSTRUCTION = `你是一位严谨、权威且富有耐心�
 const discoveredModelsCache: Record<ProviderId, string[]> = {
   gemini: [],
   openai_compatible: [],
+  qwen: [],
 };
+
+const catalogMemo = new Map<string, { models: string[]; at: number; baseUrl: string }>();
+const CATALOG_TTL_MS = 120_000;
+
+function catalogCacheKey(
+  providerId: ProviderId,
+  credentials: { apiKey: string; baseUrl: string }
+): string {
+  return `${providerId}|${credentials.baseUrl}|${credentials.apiKey.length}:${credentials.apiKey.slice(-4)}`;
+}
+
+function normalizeSecret(raw: unknown): string {
+  return String(raw || '')
+    .trim()
+    .replace(/^Bearer\s+/i, '');
+}
+
+function qwenUrlsToTry(preferred: string): string[] {
+  const first = preferred.replace(/\/+$/, '') || DEFAULT_QWEN_BASE_URL;
+  return [first, ...QWEN_COMPAT_BASE_URLS.filter((url) => url !== first)];
+}
+
+function isLikelyAuthFailure(err: unknown): boolean {
+  const text = String((err as any)?.message || err || '').toLowerCase();
+  return /incorrect api key|invalid api key|unauthorized|401|apikey-error|authentication/.test(text);
+}
+
+async function discoverQwenCatalog(
+  apiKey: string,
+  preferredUrl: string
+): Promise<{ models: string[]; baseUrl: string }> {
+  let lastErr: unknown = null;
+  for (const url of qwenUrlsToTry(preferredUrl)) {
+    try {
+      const models = await discoverOpenAiModels(apiKey, url, scoreQwenModel);
+      return { models, baseUrl: url };
+    } catch (err) {
+      lastErr = err;
+      if (!isLikelyAuthFailure(err)) throw err;
+    }
+  }
+  const detail = lastErr instanceof Error ? lastErr.message : String(lastErr || '');
+  throw new Error(
+    `三个千问接入点都拒绝了这把密钥（北京 / 国际 / QwenCloud）。国内百炼、国际站和 QwenCloud 的 Key 不能混用；三个都 401 说明密钥本身无效或已过期。${
+      detail ? ` 最后一次返回：${detail}` : ''
+    }`
+  );
+}
+
+function envKeyFor(providerId: ProviderId): string {
+  if (providerId === 'gemini') return process.env.GEMINI_API_KEY?.trim() || '';
+  if (providerId === 'qwen') return process.env.DASHSCOPE_API_KEY?.trim() || '';
+  return '';
+}
+
+function defaultBaseUrlFor(providerId: ProviderId): string {
+  return providerId === 'qwen' ? DEFAULT_QWEN_BASE_URL : DEFAULT_OPENAI_BASE_URL;
+}
+
+function missingKeyMessage(providerId: ProviderId): string {
+  if (providerId === 'gemini') return '缺少 Google Gemini API Key。';
+  if (providerId === 'qwen') return '缺少通义千问（DashScope）API Key。';
+  return '缺少 OpenAI / Claude 多模态兼容协议 API Key。';
+}
 
 async function refreshModelCatalog(
   providerId: ProviderId,
   credentials: { apiKey: string; baseUrl: string }
 ): Promise<string[]> {
+  const key = catalogCacheKey(providerId, credentials);
+  const cached = catalogMemo.get(key);
+  if (cached && Date.now() - cached.at < CATALOG_TTL_MS && cached.models.length > 0) {
+    discoveredModelsCache[providerId] = cached.models;
+    if (cached.baseUrl) credentials.baseUrl = cached.baseUrl;
+    return cached.models;
+  }
+
   const models =
     providerId === 'gemini'
       ? await discoverGeminiModels(credentials.apiKey)
-      : await discoverOpenAiModels(credentials.apiKey, credentials.baseUrl);
-  if (models.length > 0) discoveredModelsCache[providerId] = models;
+      : providerId === 'qwen'
+        ? await (async () => {
+            const found = await discoverQwenCatalog(credentials.apiKey, credentials.baseUrl);
+            credentials.baseUrl = found.baseUrl;
+            return found.models;
+          })()
+        : await discoverOpenAiModels(credentials.apiKey, credentials.baseUrl, scoreOpenAiCompatibleModel);
+  if (models.length > 0) {
+    discoveredModelsCache[providerId] = models;
+    catalogMemo.set(key, { models, at: Date.now(), baseUrl: credentials.baseUrl });
+  }
   return models;
 }
 
 /** Resolves the answering model against the just-verified catalog. */
 function resolveDynamicModel(requestedModel: unknown, catalog: string[]): string {
   const requested = typeof requestedModel === 'string' ? requestedModel.trim() : '';
-  if (requested && catalog.includes(requested)) return requested;
+  if (
+    requested &&
+    catalog.includes(requested) &&
+    !isFragileRelayModel(requested)
+  ) {
+    return requested;
+  }
   return pickPreferredModel(catalog);
 }
 
@@ -116,7 +207,11 @@ async function discoverGeminiModels(apiKey: string): Promise<string[]> {
   return rankModels(models, scoreGeminiModel);
 }
 
-async function discoverOpenAiModels(apiKey: string, baseUrl: string): Promise<string[]> {
+async function discoverOpenAiModels(
+  apiKey: string,
+  baseUrl: string,
+  scorer: (lowered: string) => number = scoreOpenAiCompatibleModel
+): Promise<string[]> {
   const headers: Record<string, string> = {
     'User-Agent': 'aistudio-build/1.0',
     Accept: 'application/json',
@@ -139,7 +234,7 @@ async function discoverOpenAiModels(apiKey: string, baseUrl: string): Promise<st
     new Set(raw.map((item: any) => (typeof item === 'string' ? item : item.id || item.name)).filter(Boolean))
   ) as string[];
 
-  return rankModels(models, scoreOpenAiCompatibleModel);
+  return rankModels(models, scorer);
 }
 
 async function autoDiscoverModelsOnBoot(): Promise<void> {
@@ -188,6 +283,10 @@ function newBookId(): string {
 }
 
 function describeIngest(meta: BookMetadata): string {
+  if (meta.readMode === 'whole') {
+    return `✅ 《${meta.name}》已按整份阅读挂载，共 ${meta.pageCount} 页。提问时将直接送入模型（超过通道上限的页会被截断）。`;
+  }
+
   const scale = `共 ${meta.pageCount} 页，${meta.toc.length} 条大纲`;
 
   switch (meta.tocSource) {
@@ -210,9 +309,7 @@ function visionContextFromRequest(body: any): VisionContext | null {
   const providerId = normalizeProviderId(body?.provider);
   const provider = getProvider(providerId);
 
-  const apiKey = String(
-    body?.apiKey || (providerId === 'gemini' ? process.env.GEMINI_API_KEY : '') || ''
-  ).trim();
+  const apiKey = String(body?.apiKey || envKeyFor(providerId) || '').trim();
   if (!apiKey) return null;
 
   const model = resolveDynamicModel(body?.model, discoveredModelsCache[providerId] || []);
@@ -235,7 +332,8 @@ async function handleBookUpload(req: Request, res: Response): Promise<void> {
   const { uploadId, chunkIndex, totalChunks, fileName, fileSize, clientFileName } = req.body || {};
   const rawFileName = clientFileName || fileName || req.file.originalname || 'textbook.pdf';
   const safeName = decodeOriginalFileName(rawFileName);
-  const vision = visionContextFromRequest(req.body);
+  const readMode = normalizeReadMode(req.body?.readMode);
+  const vision = readMode === 'whole' ? null : visionContextFromRequest(req.body);
 
   // Mode A: chunked upload for large textbooks
   if (uploadId && chunkIndex !== undefined && totalChunks) {
@@ -271,7 +369,7 @@ async function handleBookUpload(req: Request, res: Response): Promise<void> {
         fs.rmSync(sessionDir, { recursive: true, force: true });
       } catch {}
 
-      const meta = await ingestBook(finalPath, safeName, fs.statSync(finalPath).size, bookId, vision);
+      const meta = await ingestBook(finalPath, safeName, fs.statSync(finalPath).size, bookId, vision, readMode);
       saveBookMetadata(meta);
       res.json({ success: true, completed: true, book: { ...meta, status: 'ready' }, message: describeIngest(meta) });
     } catch (err: any) {
@@ -291,7 +389,7 @@ async function handleBookUpload(req: Request, res: Response): Promise<void> {
 
   try {
     fs.writeFileSync(savedPath, req.file.buffer);
-    const meta = await ingestBook(savedPath, safeName, req.file.size, bookId, vision);
+    const meta = await ingestBook(savedPath, safeName, req.file.size, bookId, vision, readMode);
     saveBookMetadata(meta);
     res.json({ success: true, completed: true, book: { ...meta, status: 'ready' }, message: describeIngest(meta) });
   } catch (err: any) {
@@ -360,7 +458,7 @@ app.post('/api/models/discover', async (req: Request, res: Response): Promise<vo
     let models: string[];
 
     if (provider === 'gemini') {
-      const key = String(customKey || req.headers['x-gemini-api-key'] || process.env.GEMINI_API_KEY || '').trim();
+      const key = normalizeSecret(customKey || req.headers['x-gemini-api-key'] || envKeyFor('gemini'));
       if (!key) {
         res.status(400).json({
           success: false,
@@ -371,10 +469,35 @@ app.post('/api/models/discover', async (req: Request, res: Response): Promise<vo
       }
       models = await discoverGeminiModels(key);
     } else {
-      models = await discoverOpenAiModels(
-        String(customKey || '').trim(),
-        String(customBaseUrl || DEFAULT_OPENAI_BASE_URL).trim()
-      );
+      const key = normalizeSecret(customKey || envKeyFor(provider));
+      const preferredUrl = String(customBaseUrl || defaultBaseUrlFor(provider)).trim();
+      if (provider === 'qwen' && !key) {
+        res.status(400).json({
+          success: false,
+          provider,
+          error: '未提供通义千问 API Key，且系统环境变量中未检测到 DASHSCOPE_API_KEY。',
+        });
+        return;
+      }
+
+      if (provider === 'qwen') {
+        const found = await discoverQwenCatalog(key, preferredUrl);
+        models = found.models;
+        if (models.length > 0) discoveredModelsCache[provider] = models;
+        res.json({
+          success: true,
+          provider,
+          models,
+          baseUrl: found.baseUrl,
+          message:
+            found.baseUrl === preferredUrl
+              ? `成功拉取到 ${models.length} 个可用模型！`
+              : `密钥在当前地址无效，已改用 ${found.baseUrl}，拉到 ${models.length} 个模型。`,
+        });
+        return;
+      }
+
+      models = await discoverOpenAiModels(key, preferredUrl, scoreOpenAiCompatibleModel);
     }
 
     if (models.length > 0) discoveredModelsCache[provider] = models;
@@ -430,17 +553,16 @@ app.post('/api/chat', async (req: Request, res: Response): Promise<void> => {
 
   try {
     const credentials = {
-      apiKey: String(customApiKey || req.headers['x-gemini-api-key'] || process.env.GEMINI_API_KEY || '').trim(),
-      baseUrl: String(baseUrl || DEFAULT_OPENAI_BASE_URL).trim(),
+      apiKey: normalizeSecret(
+        customApiKey || (providerId === 'gemini' ? req.headers['x-gemini-api-key'] : '') || envKeyFor(providerId)
+      ),
+      baseUrl: String(baseUrl || defaultBaseUrlFor(providerId)).trim(),
     };
 
     if (!credentials.apiKey) {
       channel.fail({
         code: 'auth',
-        message:
-          providerId === 'gemini'
-            ? '缺少 Google Gemini API Key。'
-            : '缺少 OpenAI / Claude 多模态兼容协议 API Key。',
+        message: missingKeyMessage(providerId),
         hint: '请在左侧配置面板填写有效的 API Key 后重试。',
       });
       return;
@@ -486,13 +608,16 @@ app.post('/api/chat', async (req: Request, res: Response): Promise<void> => {
       );
     }
 
+    const chapterMounted = mounted.filter((book) => book.readMode !== 'whole');
+    const wholeMounted = mounted.filter((book) => book.readMode === 'whole');
+
     // ---- STAGE 2: route the question against the TOC tree only ----
     let decision = null;
-    if (mounted.length > 0) {
+    if (chapterMounted.length > 0) {
       channel.stage('正在查阅教材目录，定位相关章节…');
       decision = await routeQuestion({
         prompt,
-        books: mounted,
+        books: chapterMounted,
         provider,
         routingModel: pickRoutingModel(discoveredModelsCache[providerId], answerModel),
         credentials,
@@ -502,32 +627,53 @@ app.post('/api/chat', async (req: Request, res: Response): Promise<void> => {
 
     // ---- STAGE 3: physically slice, then render into the provider's visual format ----
     let excerpt = null;
-    const routedBook = decision ? mounted.find((b) => b.id === decision!.bookId) : undefined;
+    const routedBook = decision ? chapterMounted.find((b) => b.id === decision!.bookId) : undefined;
 
-    if (decision && routedBook) {
+    if (wholeMounted.length > 0 || (decision && routedBook)) {
       channel.stage(
         provider.excerptFormat === 'pdf'
-          ? '正在物理切取目标章节…'
-          : '正在物理切取目标章节并渲染为高精度页面影像…'
+          ? wholeMounted.length > 0
+            ? '正在装入整份文件…'
+            : '正在物理切取目标章节…'
+          : wholeMounted.length > 0
+            ? '正在渲染整份文件页面…'
+            : '正在物理切取目标章节并渲染为高精度页面影像…'
       );
       try {
-        excerpt = await prepareExcerpt(decision, routedBook, provider);
+        excerpt = await assembleReadingPayload({
+          wholeBooks: wholeMounted,
+          chapterDecision: decision,
+          chapterBook: routedBook,
+          provider,
+          onNotice: (level, message) => channel.notice(level, message),
+        });
       } catch (err) {
         console.warn('[chat] slicing failed, answering without textbook context:', err);
         channel.notice('warn', '教材切片失败，本轮将以通识推导作答。');
       }
 
       if (excerpt) {
-        const prefix = decision.source === 'keyword' ? '📖 已按目录关键词定位' : '📖 智能图书管理员已查阅目录并锁定';
+        const wholeLabel = wholeMounted
+          .map((book) => `📄 整份阅读：《${book.name}》`)
+          .join(' · ');
+        const chapterLabel = decision
+          ? `${decision.source === 'keyword' ? '📖 已按目录关键词定位' : '📖 智能图书管理员已查阅目录并锁定'}：《${decision.bookName}》${decision.chapterTitle} (P${decision.startPage} - P${decision.endPage})`
+          : '';
+        const label = [wholeLabel, chapterLabel].filter(Boolean).join(' · ');
         channel.send({
           routing: {
-            ...decision,
+            ...(decision || {
+              bookId: wholeMounted[0]?.id,
+              bookName: excerpt.bookName,
+              chapterTitle: excerpt.chapterTitle,
+              source: 'keyword',
+            }),
             matched: true,
             startPage: excerpt.pageRange[0],
             endPage: excerpt.pageRange[1],
             contextTokens: excerpt.estimatedTokens,
             payload: provider.excerptFormat,
-            label: `${prefix}：《${decision.bookName}》${decision.chapterTitle} (P${excerpt.pageRange[0]} - P${excerpt.pageRange[1]})`,
+            label,
           },
         });
       }

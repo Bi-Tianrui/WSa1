@@ -5,16 +5,22 @@ import { SourceCodeViewer } from './components/SourceCodeViewer';
 import { LatexStudio, DEFAULT_ACADEMIC_LATEX_TEMPLATE } from './components/LatexStudio';
 import { ChatMessage, MountedBook, ApiProviderType, ModelDiscoveryResponse, StreamNotice } from './types';
 import { markdownToLatexDocument } from './utils/markdownToLatex';
-import { isRetiredGeminiFlash, isUnusableReadingModel, pickPreferredModel } from '../server/models';
+import { isFragileRelayModel, isRetiredGeminiFlash, isUnusableReadingModel, pickPreferredModel } from '../server/models';
 import { Terminal, MessageSquare, FileCode, RefreshCw } from 'lucide-react';
+
+const QWEN_DEFAULT_BASE_URL = 'https://dashscope.aliyuncs.com/compatible-mode/v1';
+
+function readStoredProvider(): ApiProviderType {
+  const raw = localStorage.getItem('api_provider');
+  if (raw === 'qwen' || raw === 'openai_compatible' || raw === 'gemini') return raw;
+  return 'gemini';
+}
 
 export default function App() {
   const [activeView, setActiveView] = useState<'chat' | 'latex' | 'code'>('chat');
 
   // Multi-Provider Authentication State
-  const [provider, setProvider] = useState<ApiProviderType>(() => {
-    return (localStorage.getItem('api_provider') as ApiProviderType) || 'gemini';
-  });
+  const [provider, setProvider] = useState<ApiProviderType>(() => readStoredProvider());
   const [geminiApiKey, setGeminiApiKey] = useState<string>(() => {
     return localStorage.getItem('gemini_api_key') || '';
   });
@@ -24,10 +30,16 @@ export default function App() {
   const [openaiApiKey, setOpenaiApiKey] = useState<string>(() => {
     return localStorage.getItem('openai_api_key') || '';
   });
+  const [qwenBaseUrl, setQwenBaseUrl] = useState<string>(() => {
+    return localStorage.getItem('qwen_base_url') || QWEN_DEFAULT_BASE_URL;
+  });
+  const [qwenApiKey, setQwenApiKey] = useState<string>(() => {
+    return localStorage.getItem('qwen_api_key') || '';
+  });
 
   // Dynamic Models State
   const [selectedModel, setSelectedModel] = useState<string>(() => {
-    const currP = (localStorage.getItem('api_provider') as ApiProviderType) || 'gemini';
+    const currP = readStoredProvider();
     const saved = localStorage.getItem(`selected_model_${currP}`);
     if (saved) return saved;
     const cached = localStorage.getItem(`discovered_models_${currP}`);
@@ -40,7 +52,7 @@ export default function App() {
     return '';
   });
   const [discoveredModels, setDiscoveredModels] = useState<string[]>(() => {
-    const currP = (localStorage.getItem('api_provider') as ApiProviderType) || 'gemini';
+    const currP = readStoredProvider();
     const cached = localStorage.getItem(`discovered_models_${currP}`);
     if (cached) {
       try { return JSON.parse(cached); } catch {}
@@ -57,15 +69,22 @@ export default function App() {
   const [hasImportedLatex, setHasImportedLatex] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
 
+  const credentialsFor = (p: ApiProviderType) => {
+    if (p === 'gemini') return { key: geminiApiKey, url: undefined as string | undefined };
+    if (p === 'qwen') return { key: qwenApiKey, url: qwenBaseUrl };
+    return { key: openaiApiKey, url: openaiBaseUrl };
+  };
+
   const handleDiscoverModels = useCallback(
     async (
       targetProvider?: ApiProviderType,
       targetKey?: string,
       targetUrl?: string
-    ): Promise<{ ok: boolean; model: string; error?: string }> => {
+    ): Promise<{ ok: boolean; model: string; error?: string; baseUrl?: string }> => {
       const p = targetProvider ?? provider;
-      const k = targetKey ?? (p === 'gemini' ? geminiApiKey : openaiApiKey);
-      const u = targetUrl ?? openaiBaseUrl;
+      const fallback = credentialsFor(p);
+      const k = (targetKey ?? fallback.key).trim();
+      const u = targetUrl ?? fallback.url;
 
       setIsDiscoveringModels(true);
       setDiscoveryStatus(null);
@@ -89,13 +108,19 @@ export default function App() {
         setDiscoveredModels(data.models);
         localStorage.setItem(`discovered_models_${p}`, JSON.stringify(data.models));
 
+        if (p === 'qwen' && data.baseUrl && data.baseUrl !== qwenBaseUrl) {
+          setQwenBaseUrl(data.baseUrl);
+          localStorage.setItem('qwen_base_url', data.baseUrl);
+        }
+
         const preferred = pickPreferredModel(data.models);
         let active = selectedModel;
         if (
           !active ||
           !data.models.includes(active) ||
           isUnusableReadingModel(active) ||
-          isRetiredGeminiFlash(active)
+          isRetiredGeminiFlash(active) ||
+          isFragileRelayModel(active)
         ) {
           active = preferred;
           setSelectedModel(active);
@@ -106,7 +131,7 @@ export default function App() {
           type: 'success',
           message: `已探测到 ${data.models.length} 个可用模型 (首选: ${active})`,
         });
-        return { ok: true, model: active };
+        return { ok: true, model: active, baseUrl: data.baseUrl };
       } catch (err: any) {
         console.error('Model discovery error:', err);
         const message = err?.message || '探测失败，请检查网络或密钥配置';
@@ -116,12 +141,13 @@ export default function App() {
         setIsDiscoveringModels(false);
       }
     },
-    [provider, geminiApiKey, openaiApiKey, openaiBaseUrl, selectedModel]
+    [provider, geminiApiKey, openaiApiKey, openaiBaseUrl, qwenApiKey, qwenBaseUrl, selectedModel]
   );
 
   // Auto trigger model discovery and fetch indexed books on first mount
   useEffect(() => {
-    if (discoveredModels.length === 0 || !selectedModel) {
+    const { key } = credentialsFor(provider);
+    if ((discoveredModels.length === 0 || !selectedModel) && (provider === 'gemini' || key.trim())) {
       handleDiscoverModels();
     }
     // Fetch server-persisted books
@@ -139,6 +165,7 @@ export default function App() {
               uploadTime: b.uploadTime || '刚刚',
               toc: b.toc || [],
               tocSource: b.tocSource,
+              readMode: b.readMode === 'whole' ? 'whole' : 'chapter',
             }))
           );
         }
@@ -165,8 +192,10 @@ export default function App() {
       localStorage.setItem(`selected_model_${newProvider}`, modelToSet);
     }
 
-    const key = newProvider === 'gemini' ? geminiApiKey : openaiApiKey;
-    handleDiscoverModels(newProvider, key, openaiBaseUrl);
+    const { key, url } = credentialsFor(newProvider);
+    if (newProvider === 'gemini' || key.trim()) {
+      handleDiscoverModels(newProvider, key, url);
+    }
   };
 
   const handleModelChange = (model: string) => {
@@ -187,6 +216,17 @@ export default function App() {
   const handleOpenaiApiKeyChange = (key: string) => {
     setOpenaiApiKey(key);
     localStorage.setItem('openai_api_key', key);
+  };
+
+  const handleQwenBaseUrlChange = (url: string) => {
+    setQwenBaseUrl(url);
+    localStorage.setItem('qwen_base_url', url);
+  };
+
+  const handleQwenApiKeyChange = (key: string) => {
+    const next = key.trim();
+    setQwenApiKey(next);
+    localStorage.setItem('qwen_api_key', next);
   };
 
 
@@ -278,7 +318,7 @@ export default function App() {
     };
 
     try {
-      const activeKey = provider === 'gemini' ? geminiApiKey : openaiApiKey;
+      const { key: activeKey, url: activeUrl } = credentialsFor(provider);
       patchAssistant({ stage: '正在验证 API Key、Base URL 与可用模型…' });
       const preflight = await handleDiscoverModels();
       if (!preflight.ok) {
@@ -296,7 +336,7 @@ export default function App() {
         },
         body: JSON.stringify({
           provider: provider,
-          baseUrl: openaiBaseUrl || undefined,
+          baseUrl: preflight.baseUrl || activeUrl || undefined,
           model: modelToUse,
           prompt: text,
           history: messages
@@ -304,7 +344,7 @@ export default function App() {
             .map((m) => ({ role: m.role, content: m.content })),
           bookIds: mountedBooks.map((b) => b.id),
           books: mountedBooks.map((b) => ({ id: b.id, name: b.name })),
-          customApiKey: activeKey || undefined,
+          customApiKey: (activeKey || '').trim() || undefined,
         }),
       });
 
@@ -462,7 +502,7 @@ export default function App() {
 
           <div className="hidden lg:flex items-center gap-2 text-xs text-zinc-500">
             <span className="text-zinc-500">
-              {provider === 'gemini' ? 'Gemini' : 'OpenAI'}
+              {provider === 'gemini' ? 'Gemini' : provider === 'qwen' ? '千问' : 'OpenAI'}
             </span>
             <select
               value={selectedModel}
@@ -545,6 +585,10 @@ export default function App() {
               onOpenaiBaseUrlChange={handleOpenaiBaseUrlChange}
               openaiApiKey={openaiApiKey}
               onOpenaiApiKeyChange={handleOpenaiApiKeyChange}
+              qwenBaseUrl={qwenBaseUrl}
+              onQwenBaseUrlChange={handleQwenBaseUrlChange}
+              qwenApiKey={qwenApiKey}
+              onQwenApiKeyChange={handleQwenApiKeyChange}
               selectedModel={selectedModel}
               onModelChange={handleModelChange}
               discoveredModels={discoveredModels}

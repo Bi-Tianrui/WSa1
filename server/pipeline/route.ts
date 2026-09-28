@@ -6,7 +6,7 @@ import {
   clampPageRange,
   estimateTokens,
 } from '../budget';
-import { isRetiredGeminiFlash, isUnusableReadingModel } from '../models';
+import { isFragileRelayModel, isRetiredGeminiFlash, isUnusableReadingModel } from '../models';
 import { TocItem } from '../pdf/outline';
 import { BookMetadata } from '../pdf/storage';
 import { ChatProvider, ProviderCredentials } from '../providers';
@@ -177,7 +177,7 @@ export function matchChapterLocally(
   return decision;
 }
 
-const FAST_MODEL_HINTS = ['flash', 'mini', 'turbo', 'lite', 'small', 'haiku'];
+const FAST_MODEL_HINTS = ['flash', 'turbo', 'lite', 'small', 'haiku', 'vl-plus'];
 const SLOW_MODEL_HINTS = ['reason', 'thinking', 'r1', 'o1', 'o3', 'pro', 'opus', 'max'];
 
 /**
@@ -188,7 +188,8 @@ const SLOW_MODEL_HINTS = ['reason', 'thinking', 'r1', 'o1', 'o3', 'pro', 'opus',
  */
 export function pickRoutingModel(candidates: string[], answerModel: string): string {
   const usable = (candidates || []).filter(
-    (name) => name && !isUnusableReadingModel(name) && !isRetiredGeminiFlash(name)
+    (name) =>
+      name && !isUnusableReadingModel(name) && !isRetiredGeminiFlash(name) && !isFragileRelayModel(name)
   );
   const pool = usable.length > 0 ? usable : (candidates || []).filter(Boolean);
   if (pool.length === 0) return answerModel;
@@ -263,9 +264,10 @@ export interface RouteOptions {
 export async function routeQuestion(options: RouteOptions): Promise<RoutingDecision | null> {
   const { prompt, provider, routingModel, credentials, channel } = options;
 
-  // A book with no outline has nothing to route against; it is skipped rather than
-  // guessed at, so the model is never pointed to an arbitrary page.
-  const books = options.books.filter((book) => (book.toc || []).length > 0);
+  // A book with no outline, or one uploaded as a whole file, has nothing to route against.
+  const books = options.books.filter(
+    (book) => book.readMode !== 'whole' && (book.toc || []).length > 0
+  );
   if (books.length === 0) return null;
 
   if (!routingModel || !credentials.apiKey) return matchChapterLocally(prompt, books);

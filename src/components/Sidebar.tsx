@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Trash2, RotateCcw, Eye, EyeOff, RefreshCw, Loader2 } from 'lucide-react';
-import { MountedBook, ApiProviderType } from '../types';
+import { MountedBook, ApiProviderType, BookReadMode } from '../types';
 
 interface SidebarProps {
   provider: ApiProviderType;
@@ -11,6 +11,10 @@ interface SidebarProps {
   onOpenaiBaseUrlChange: (url: string) => void;
   openaiApiKey: string;
   onOpenaiApiKeyChange: (key: string) => void;
+  qwenBaseUrl: string;
+  onQwenBaseUrlChange: (url: string) => void;
+  qwenApiKey: string;
+  onQwenApiKeyChange: (key: string) => void;
   selectedModel: string;
   onModelChange: (model: string) => void;
   discoveredModels: string[];
@@ -33,6 +37,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onOpenaiBaseUrlChange,
   openaiApiKey,
   onOpenaiApiKeyChange,
+  qwenBaseUrl,
+  onQwenBaseUrlChange,
+  qwenApiKey,
+  onQwenApiKeyChange,
   selectedModel,
   onModelChange,
   discoveredModels,
@@ -47,35 +55,42 @@ export const Sidebar: React.FC<SidebarProps> = ({
 }) => {
   const [showKey, setShowKey] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
+  const [uploadingMode, setUploadingMode] = useState<BookReadMode | null>(null);
   const [uploadProgress, setUploadProgress] = useState<number>(0);
   const [uploadStatusText, setUploadStatusText] = useState<string>('');
   const [uploadError, setUploadError] = useState<string | null>(null);
-  const [isDragging, setIsDragging] = useState<boolean>(false);
-  const fileInputRef = React.useRef<HTMLInputElement>(null);
+  const [draggingMode, setDraggingMode] = useState<BookReadMode | null>(null);
+  const chapterInputRef = React.useRef<HTMLInputElement>(null);
+  const wholeInputRef = React.useRef<HTMLInputElement>(null);
+  const lastUploadModeRef = React.useRef<BookReadMode>('chapter');
 
   /**
    * Indexing a scanned textbook may require the vision model to read its printed
    * contents page, so the active provider travels with the upload.
    */
-  const appendVisionCredentials = (formData: FormData) => {
+  const appendUploadFields = (formData: FormData, readMode: BookReadMode) => {
     formData.append('provider', provider);
     formData.append('model', selectedModel);
-    formData.append('apiKey', provider === 'gemini' ? geminiApiKey : openaiApiKey);
-    formData.append('baseUrl', openaiBaseUrl);
+    formData.append('apiKey', provider === 'gemini' ? geminiApiKey : provider === 'qwen' ? qwenApiKey : openaiApiKey);
+    formData.append('baseUrl', provider === 'qwen' ? qwenBaseUrl : openaiBaseUrl);
+    formData.append('readMode', readMode);
   };
 
   // Resilient PDF upload to /api/books/upload (automatically slices >15MB files into 6MB chunks to stay well under Cloud Run & proxy limits)
-  const processPdfFile = async (file: File) => {
+  const processPdfFile = async (file: File, readMode: BookReadMode) => {
     if (!file.name.toLowerCase().endsWith('.pdf')) {
-      setUploadError('请选择标准 .pdf 格式的教科书或学术教材！');
+      setUploadError('请选择标准 .pdf 格式的文件！');
       return;
     }
 
+    lastUploadModeRef.current = readMode;
+    setUploadingMode(readMode);
     setIsUploading(true);
     setUploadError(null);
     setUploadProgress(10);
     const sizeMb = (file.size / (1024 * 1024)).toFixed(1);
-    setUploadStatusText(`正在准备挂载《${file.name}》(${sizeMb} MB)...`);
+    const modeLabel = readMode === 'whole' ? '整份阅读' : '按章节切片';
+    setUploadStatusText(`正在准备以${modeLabel}挂载《${file.name}》(${sizeMb} MB)...`);
 
     const CHUNK_THRESHOLD = 15 * 1024 * 1024; // 15MB threshold
     const CHUNK_SIZE = 6 * 1024 * 1024; // 6MB slices (guaranteed safe on Cloud Run)
@@ -86,11 +101,15 @@ export const Sidebar: React.FC<SidebarProps> = ({
       if (file.size <= CHUNK_THRESHOLD) {
         // Direct single-file upload for smaller textbooks
         setUploadProgress(40);
-        setUploadStatusText(`正在上传《${file.name}》并解析大纲（扫描版需视觉识别目录，可能稍慢）...`);
+        setUploadStatusText(
+          readMode === 'whole'
+            ? `正在上传《${file.name}》，跳过目录索引…`
+            : `正在上传《${file.name}》并解析大纲（扫描版需视觉识别目录，可能稍慢）...`
+        );
         const formData = new FormData();
         formData.append('file', file);
         formData.append('clientFileName', file.name);
-        appendVisionCredentials(formData);
+        appendUploadFields(formData, readMode);
 
         let attempts = 0;
         let success = false;
@@ -156,7 +175,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
               formData.append('fileName', file.name);
               formData.append('fileSize', String(file.size));
               formData.append('file', chunkBlob, file.name);
-              appendVisionCredentials(formData);
+              appendUploadFields(formData, readMode);
 
               const res = await fetch('/api/books/upload', {
                 method: 'POST',
@@ -199,6 +218,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
         setTimeout(() => {
           setIsUploading(false);
+          setUploadingMode(null);
           setUploadProgress(0);
           setUploadStatusText('');
         }, 1200);
@@ -209,42 +229,54 @@ export const Sidebar: React.FC<SidebarProps> = ({
       console.warn('Upload book issue:', err);
       setUploadError(err?.message || '教材上传遇到网络波动，请检查连接后点击重试');
       setIsUploading(false);
+      setUploadingMode(null);
       setUploadProgress(0);
       setUploadStatusText('');
     }
   };
 
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>, readMode: BookReadMode) => {
     const files = e.target.files;
     if (!files || files.length === 0) return;
     const file = files[0];
-    await processPdfFile(file);
+    await processPdfFile(file, readMode);
     if (e.target) e.target.value = '';
   };
 
-  const handleDragOver = (e: React.DragEvent) => {
+  const handleDragOver = (e: React.DragEvent, readMode: BookReadMode) => {
     e.preventDefault();
     e.stopPropagation();
-    setIsDragging(true);
+    setDraggingMode(readMode);
   };
 
   const handleDragLeave = (e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    setIsDragging(false);
+    setDraggingMode(null);
   };
 
-  const handleDrop = async (e: React.DragEvent) => {
+  const handleDrop = async (e: React.DragEvent, readMode: BookReadMode) => {
     e.preventDefault();
     e.stopPropagation();
-    setIsDragging(false);
+    setDraggingMode(null);
     const files = e.dataTransfer.files;
     if (!files || files.length === 0) return;
     const file = files[0];
-    await processPdfFile(file);
+    await processPdfFile(file, readMode);
+  };
+
+  const openPicker = (readMode: BookReadMode) => {
+    if (isUploading) return;
+    const target = readMode === 'whole' ? wholeInputRef.current : chapterInputRef.current;
+    target?.click();
   };
 
   // Only endpoints that serve vision-capable models belong here.
+  const QWEN_URL_PRESETS = [
+    { label: '北京', url: 'https://dashscope.aliyuncs.com/compatible-mode/v1' },
+    { label: '国际', url: 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1' },
+    { label: 'QwenCloud', url: 'https://maas.qwencloudapi.com/compatible-mode/v1' },
+  ];
   const URL_PRESETS = [
     { label: 'OpenAI 官方', url: 'https://api.openai.com/v1' },
     { label: 'XBCL 中转', url: 'https://xbcl.link/v1' },
@@ -253,12 +285,74 @@ export const Sidebar: React.FC<SidebarProps> = ({
     { label: '本地 Ollama', url: 'http://localhost:11434/v1' },
   ];
 
-  const tocLabel = (source?: string) => {
-    if (source === 'bookmarks') return '书签';
-    if (source === 'text-scan') return '正文目录';
-    if (source === 'vision') return '视觉目录';
-    if (source === 'synthesized') return '按页分块';
+  const tocLabel = (book: MountedBook) => {
+    if (book.readMode === 'whole') return '整份阅读';
+    if (book.tocSource === 'bookmarks') return '书签';
+    if (book.tocSource === 'text-scan') return '正文目录';
+    if (book.tocSource === 'vision') return '视觉目录';
+    if (book.tocSource === 'synthesized') return '按页分块';
     return '已索引';
+  };
+
+  const dropZone = (mode: BookReadMode) => {
+    const isChapter = mode === 'chapter';
+    const active = draggingMode === mode;
+    const busy = isUploading && uploadingMode === mode;
+    const locked = isUploading && uploadingMode !== mode;
+    return (
+      <div
+        onDragOver={(e) => handleDragOver(e, mode)}
+        onDragLeave={handleDragLeave}
+        onDrop={(e) => handleDrop(e, mode)}
+        onClick={() => openPicker(mode)}
+        className={`border border-dashed rounded p-3 flex flex-col items-center justify-center ${
+          locked
+            ? 'border-zinc-800 bg-zinc-950 cursor-not-allowed opacity-50'
+            : busy
+              ? 'border-zinc-700 bg-zinc-900 cursor-wait'
+              : active
+                ? 'border-zinc-500 bg-zinc-900 cursor-pointer'
+                : 'border-zinc-700 hover:border-zinc-500 hover:bg-zinc-900 cursor-pointer'
+        }`}
+      >
+        <input
+          ref={isChapter ? chapterInputRef : wholeInputRef}
+          type="file"
+          accept=".pdf"
+          onChange={(e) => handleFileUpload(e, mode)}
+          className="hidden"
+          disabled={isUploading}
+        />
+        {busy ? (
+          <div className="w-full space-y-2">
+            <div className="flex items-center justify-between text-xs text-zinc-400">
+              <span className="flex items-center gap-1.5 truncate pr-2">
+                <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
+                <span className="truncate">{uploadStatusText || '上传中…'}</span>
+              </span>
+              <span className="font-mono shrink-0">{uploadProgress}%</span>
+            </div>
+            <div className="w-full bg-zinc-800 h-1 overflow-hidden">
+              <div
+                className="bg-zinc-100 h-full transition-all duration-300"
+                style={{ width: `${Math.max(5, uploadProgress)}%` }}
+              />
+            </div>
+          </div>
+        ) : (
+          <div className="text-center space-y-1">
+            <div className="text-xs text-zinc-300">{isChapter ? '按章节切片' : '整份阅读'}</div>
+            <div className="text-[11px] text-zinc-500 leading-snug">
+              {active
+                ? '松开以上传'
+                : isChapter
+                  ? '教材：建目录，提问时切章节'
+                  : '习题 / PPT / 短文：整份送入'}
+            </div>
+          </div>
+        )}
+      </div>
+    );
   };
 
   return (
@@ -266,7 +360,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
       <div className="flex-1 overflow-y-auto px-4 py-4 space-y-5 text-sm">
         <div className="space-y-2">
           <label className="text-xs text-zinc-500">通道</label>
-          <div className="grid grid-cols-2 gap-1">
+          <div className="grid grid-cols-3 gap-1">
             <button
               type="button"
               onClick={() => onProviderChange('gemini')}
@@ -277,6 +371,17 @@ export const Sidebar: React.FC<SidebarProps> = ({
               }`}
             >
               Gemini
+            </button>
+            <button
+              type="button"
+              onClick={() => onProviderChange('qwen')}
+              className={`py-1.5 rounded text-xs cursor-pointer ${
+                provider === 'qwen'
+                  ? 'bg-zinc-100 text-zinc-950'
+                  : 'text-zinc-500 hover:text-zinc-100 hover:bg-zinc-900'
+              }`}
+            >
+              千问
             </button>
             <button
               type="button"
@@ -315,6 +420,57 @@ export const Sidebar: React.FC<SidebarProps> = ({
               >
                 {showKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
               </button>
+            </div>
+          </div>
+        ) : provider === 'qwen' ? (
+          <div className="space-y-3">
+            <div className="space-y-1.5">
+              <label className="text-xs text-zinc-500">Base URL</label>
+              <input
+                type="text"
+                value={qwenBaseUrl}
+                onChange={(e) => onQwenBaseUrlChange(e.target.value)}
+                placeholder="https://dashscope.aliyuncs.com/compatible-mode/v1"
+                className="w-full bg-zinc-900 border border-zinc-800 rounded px-3 py-2 text-xs text-zinc-100 placeholder-zinc-600 focus:outline-hidden focus:border-zinc-600 font-mono"
+              />
+              <div className="flex flex-wrap gap-1">
+                {QWEN_URL_PRESETS.map((p) => (
+                  <button
+                    key={p.url}
+                    type="button"
+                    onClick={() => onQwenBaseUrlChange(p.url)}
+                    className={`text-[11px] px-1.5 py-0.5 rounded cursor-pointer ${
+                      qwenBaseUrl === p.url
+                        ? 'bg-zinc-100 text-zinc-950'
+                        : 'text-zinc-500 hover:text-zinc-200 hover:bg-zinc-900'
+                    }`}
+                  >
+                    {p.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-xs text-zinc-500 flex items-center justify-between">
+                <span>API Key</span>
+                <span className="text-[11px] text-zinc-400">{qwenApiKey ? '已填写' : '可用环境变量'}</span>
+              </label>
+              <div className="relative">
+                <input
+                  type={showKey ? 'text' : 'password'}
+                  value={qwenApiKey}
+                  onChange={(e) => onQwenApiKeyChange(e.target.value)}
+                  placeholder="DASHSCOPE_API_KEY"
+                  className="w-full bg-zinc-900 border border-zinc-800 rounded px-3 py-2 text-xs text-zinc-100 placeholder-zinc-600 focus:outline-hidden focus:border-zinc-600 font-mono pr-9"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowKey(!showKey)}
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-200 cursor-pointer"
+                >
+                  {showKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
+              </div>
             </div>
           </div>
         ) : (
@@ -415,7 +571,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
         <div className="space-y-2">
           <div className="flex items-center justify-between">
-            <label className="text-xs text-zinc-500">教材</label>
+            <label className="text-xs text-zinc-500">文件</label>
             <div className="flex items-center gap-2">
               <span className="text-[11px] text-zinc-400">{mountedBooks.length} 本</span>
               {mountedBooks.length > 0 && (
@@ -429,53 +585,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
             </div>
           </div>
 
-          <div
-            onDragOver={handleDragOver}
-            onDragLeave={handleDragLeave}
-            onDrop={handleDrop}
-            onClick={() => {
-              if (!isUploading && fileInputRef.current) {
-                fileInputRef.current.click();
-              }
-            }}
-            className={`border border-dashed rounded p-3 flex flex-col items-center justify-center cursor-pointer ${
-              isDragging
-                ? 'border-zinc-500 bg-zinc-900'
-                : isUploading
-                ? 'border-zinc-700 bg-zinc-900 cursor-wait'
-                : 'border-zinc-700 hover:border-zinc-500 hover:bg-zinc-900'
-            }`}
-          >
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept=".pdf"
-              onChange={handleFileUpload}
-              className="hidden"
-              disabled={isUploading}
-            />
-
-            {isUploading ? (
-              <div className="w-full space-y-2">
-                <div className="flex items-center justify-between text-xs text-zinc-400">
-                  <span className="flex items-center gap-1.5 truncate pr-2">
-                    <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
-                    <span className="truncate">{uploadStatusText || '上传中…'}</span>
-                  </span>
-                  <span className="font-mono shrink-0">{uploadProgress}%</span>
-                </div>
-                <div className="w-full bg-zinc-800 h-1 overflow-hidden">
-                  <div
-                    className="bg-zinc-100 h-full transition-all duration-300"
-                    style={{ width: `${Math.max(5, uploadProgress)}%` }}
-                  />
-                </div>
-              </div>
-            ) : (
-              <span className="text-xs text-zinc-500">
-                {isDragging ? '松开以上传' : '上传 PDF'}
-              </span>
-            )}
+          <div className="grid grid-cols-1 gap-2">
+            {dropZone('chapter')}
+            {dropZone('whole')}
           </div>
 
           {uploadError && (
@@ -485,7 +597,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 <button
                   onClick={() => {
                     setUploadError(null);
-                    if (fileInputRef.current) fileInputRef.current.click();
+                    openPicker(lastUploadModeRef.current);
                   }}
                   className="text-[11px] underline cursor-pointer"
                 >
@@ -510,9 +622,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
                       <div className="text-xs text-zinc-200 truncate">{book.name}</div>
                       <div className="text-[11px] text-zinc-400 mt-0.5">
                         {book.pageCount ? `${book.pageCount} 页 · ` : ''}
-                        {tocLabel(book.tocSource)}
+                        {tocLabel(book)}
                       </div>
-                      {book.tocSource === 'synthesized' && (
+                      {book.readMode !== 'whole' && book.tocSource === 'synthesized' && (
                         <div className="mt-0.5 text-[11px] text-zinc-500">未识别目录，按每 30 页分块</div>
                       )}
                     </div>
@@ -533,7 +645,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
       <div className="px-4 py-3 border-t border-zinc-800 flex items-center justify-between">
         <span className="text-[11px] text-zinc-500">
-          {provider === 'gemini' ? 'Gemini · PDF' : 'OpenAI · 图像'}
+          {provider === 'gemini' ? 'Gemini · PDF' : provider === 'qwen' ? '千问 · 图像' : 'OpenAI · 图像'}
         </span>
         <button
           onClick={onResetChat}

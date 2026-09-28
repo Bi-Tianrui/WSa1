@@ -30,6 +30,10 @@ const NON_READING_HINTS = [
   'auto-review',
   'codex-spark',
   'codex-auto',
+  'wanx',
+  'qwen-audio',
+  'cosyvoice',
+  'paraformer',
 ];
 
 const VISION_HINTS = [
@@ -49,7 +53,12 @@ const VISION_HINTS = [
 
 export function isUnusableReadingModel(name: string): boolean {
   const lowered = name.toLowerCase();
-  return NON_READING_HINTS.some((hint) => lowered.includes(hint));
+  if (NON_READING_HINTS.some((hint) => lowered.includes(hint))) return true;
+  // Text-only Qwen SKUs cannot see textbook pages. Names with `vl` are vision;
+  // Qwen3.7 / 3.8 Plus on QwenCloud are multimodal even without `vl` in the id.
+  if (lowered.includes('qwen') && !lowered.includes('vl') && !/qwen3\.[78]/.test(lowered)) return true;
+  if (lowered.includes('qwq')) return true;
+  return false;
 }
 
 /** Retired for new Gemini keys; keep it in the list but never pick it first. */
@@ -69,17 +78,38 @@ export function scoreGeminiModel(lowered: string): number {
   return 40;
 }
 
+/** XBCL currently returns 502 for this SKU even though /models still lists it. */
+export function isFragileRelayModel(name: string): boolean {
+  return /gpt-5\.4-mini/i.test(name);
+}
+
 export function scoreOpenAiCompatibleModel(lowered: string): number {
-  if (isUnusableReadingModel(lowered)) return 0;
+  if (isUnusableReadingModel(lowered) || isFragileRelayModel(lowered)) return 0;
   const vision = VISION_HINTS.some((hint) => lowered.includes(hint));
   if (!vision) return 25;
-  if (/(mini|flash|lite|haiku)/.test(lowered)) return 115;
+  if (lowered.includes('compact')) return 80;
+  if (/(mini|flash|lite|haiku)/.test(lowered)) return 70;
+  if (/gpt-5\.6|gpt-5\.5|gpt-4o/.test(lowered)) return 130;
   return 100;
+}
+
+/** DashScope lists text Qwen next to VL; VL-Max / Qwen3-VL / Qwen3.7 must win. */
+export function scoreQwenModel(lowered: string): number {
+  if (isUnusableReadingModel(lowered)) return 0;
+  if (/qwen3\.[78].*(plus|max)/.test(lowered)) return 145;
+  if (!lowered.includes('vl') && !/qwen3\.[78]/.test(lowered)) return 10;
+  if (/qwen-vl-max|qwen3-vl-plus|qwen2\.5-vl/.test(lowered)) return 140;
+  if (lowered.includes('ocr')) return 90;
+  if (/(flash|plus|mini|lite)/.test(lowered)) return 110;
+  return 120;
 }
 
 export function pickPreferredModel(models: string[]): string {
   return (
-    models.find((name) => !isUnusableReadingModel(name) && !isRetiredGeminiFlash(name)) ||
+    models.find(
+      (name) =>
+        !isUnusableReadingModel(name) && !isRetiredGeminiFlash(name) && !isFragileRelayModel(name)
+    ) ||
     models.find((name) => !isUnusableReadingModel(name)) ||
     models[0] ||
     ''

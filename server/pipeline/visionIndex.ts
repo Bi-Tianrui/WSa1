@@ -20,7 +20,7 @@ export interface DeferredVisionOptions {
 }
 
 export function needsDeferredVision(book: BookMetadata): boolean {
-  return book.tocSource === 'synthesized' && !book.visionAttempted;
+  return book.readMode !== 'whole' && book.tocSource === 'synthesized' && !book.visionAttempted;
 }
 
 export async function recoverOutlineWithVision(

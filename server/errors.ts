@@ -157,7 +157,7 @@ export function classifyThrownFailure(err: any): LlmFailure {
   };
 }
 
-const RETRYABLE_CODES: LlmErrorCode[] = ['timeout', 'network', 'rate_limit', 'upstream'];
+const RETRYABLE_CODES: LlmErrorCode[] = ['timeout', 'network', 'upstream'];
 
 export function isRetryable(failure: LlmFailure): boolean {
   return RETRYABLE_CODES.includes(failure.code);

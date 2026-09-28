@@ -9,6 +9,8 @@ for (const dir of [UPLOADS_DIR, CHUNKS_DIR]) {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 }
 
+export type BookReadMode = 'chapter' | 'whole';
+
 /**
  * The entire local index for one textbook. This is all the server keeps in order to
  * answer questions; the PDF body itself is only ever touched one slice at a time.
@@ -22,10 +24,19 @@ export interface BookMetadata {
   uploadTime: string;
   tocSource: TocSource;
   /**
+   * `chapter` indexes a TOC and slices on each question.
+   * `whole` skips the outline and sends the file itself (capped by the channel budget).
+   */
+  readMode: BookReadMode;
+  /**
    * Set once the front pages have been shown to a vision model. Recognition is never
    * repeated for a book, whether it succeeded or came up empty.
    */
   visionAttempted?: boolean;
+}
+
+export function normalizeReadMode(raw: unknown): BookReadMode {
+  return raw === 'whole' ? 'whole' : 'chapter';
 }
 
 export function getBookPath(bookId: string): string {
@@ -56,6 +67,7 @@ export function readBookMetadata(bookId: string): BookMetadata | null {
       toc: Array.isArray(stored.toc) ? stored.toc : [],
       uploadTime: stored.uploadTime,
       tocSource: stored.tocSource,
+      readMode: stored.readMode === 'whole' ? 'whole' : 'chapter',
       visionAttempted: stored.visionAttempted,
     };
   } catch {

@@ -2,7 +2,7 @@ import fs from 'fs';
 import { PDFDocument } from 'pdf-lib';
 import { withPdfDocument } from '../pdf/document';
 import { extractOutline, extractVisualOutline, synthesizeOutline } from '../pdf/outline';
-import { BookMetadata } from '../pdf/storage';
+import { BookMetadata, BookReadMode } from '../pdf/storage';
 import { ChatProvider, ProviderCredentials } from '../providers';
 
 /**
@@ -71,10 +71,25 @@ export async function ingestBook(
   safeName: string,
   fileSize: number,
   bookId: string,
-  vision?: VisionContext | null
+  vision?: VisionContext | null,
+  readMode: BookReadMode = 'chapter'
 ): Promise<BookMetadata> {
   const rawBuffer = fs.readFileSync(filePath);
   const pageCount = await resolvePageCount(rawBuffer, fileSize);
+
+  if (readMode === 'whole') {
+    return {
+      id: bookId,
+      name: safeName,
+      sizeMb: parseFloat((fileSize / (1024 * 1024)).toFixed(2)) || 0.1,
+      pageCount,
+      toc: [],
+      uploadTime: formatUploadTime(),
+      tocSource: 'none',
+      readMode: 'whole',
+      visionAttempted: true,
+    };
+  }
 
   let toc: BookMetadata['toc'] = [];
   let tocSource: BookMetadata['tocSource'] = 'none';
@@ -124,6 +139,7 @@ export async function ingestBook(
     toc,
     uploadTime: formatUploadTime(),
     tocSource,
+    readMode: 'chapter',
     visionAttempted,
   };
 }

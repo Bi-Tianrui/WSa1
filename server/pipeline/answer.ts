@@ -1,3 +1,4 @@
+import { PDFDocument } from 'pdf-lib';
 import {
   MAX_HISTORY_TOKENS,
   MAX_INLINE_PDF_KB,
@@ -104,6 +105,111 @@ export async function prepareExcerpt(
     images: rendered.images,
     estimatedTokens: rendered.images.length * TOKENS_PER_IMAGE_PAGE,
   };
+}
+
+function excerptPageCount(excerpt: TextbookExcerpt): number {
+  return excerpt.pageRange[1] - excerpt.pageRange[0] + 1;
+}
+
+function wholeFileDecision(book: BookMetadata, endPage: number): RoutingDecision {
+  return {
+    bookId: book.id,
+    bookName: book.name,
+    chapterTitle: '全文',
+    startPage: 1,
+    endPage,
+    source: 'keyword',
+  };
+}
+
+/** Concatenates whole-file and chapter excerpts into one provider payload. */
+export async function mergeExcerpts(parts: TextbookExcerpt[]): Promise<TextbookExcerpt | null> {
+  if (parts.length === 0) return null;
+  if (parts.length === 1) return parts[0];
+
+  const names = [...new Set(parts.map((part) => part.bookName))];
+  const titles = parts.map((part) => `《${part.bookName}》${part.chapterTitle}`).join(' · ');
+  const totalPages = parts.reduce((sum, part) => sum + excerptPageCount(part), 0);
+  const estimatedTokens = parts.reduce((sum, part) => sum + part.estimatedTokens, 0);
+
+  if (parts.every((part) => part.pdfBase64)) {
+    const out = await PDFDocument.create();
+    for (const part of parts) {
+      const src = await PDFDocument.load(Buffer.from(part.pdfBase64!, 'base64'), { ignoreEncryption: true });
+      const copied = await out.copyPages(src, src.getPageIndices());
+      copied.forEach((page) => out.addPage(page));
+    }
+    const bytes = await out.save();
+    return {
+      bookName: names.join('、'),
+      chapterTitle: titles,
+      pageRange: [1, totalPages],
+      pdfBase64: Buffer.from(bytes).toString('base64'),
+      estimatedTokens,
+    };
+  }
+
+  return {
+    bookName: names.join('、'),
+    chapterTitle: titles,
+    pageRange: [1, totalPages],
+    images: parts.flatMap((part) => part.images || []),
+    estimatedTokens,
+  };
+}
+
+export interface AssembleReadingOptions {
+  wholeBooks: BookMetadata[];
+  chapterDecision: RoutingDecision | null;
+  chapterBook?: BookMetadata;
+  provider: ChatProvider;
+  onNotice: (level: 'info' | 'warn', message: string) => void;
+}
+
+/**
+ * Whole-mode files take the remaining page budget first; any leftover goes to the
+ * chapter slice. Each file is still clamped by the same 6–10 page channel cap.
+ */
+export async function assembleReadingPayload(
+  options: AssembleReadingOptions
+): Promise<TextbookExcerpt | null> {
+  const { wholeBooks, chapterDecision, chapterBook, provider, onNotice } = options;
+  const maxPages =
+    provider.excerptFormat === 'pdf' ? maxPdfPagesWithinBudget() : maxImagePagesWithinBudget();
+  const parts: TextbookExcerpt[] = [];
+  let used = 0;
+
+  for (const book of wholeBooks) {
+    if (used >= maxPages) {
+      onNotice('warn', `《${book.name}》未送入：本轮页数已满。`);
+      continue;
+    }
+    const take = Math.min(book.pageCount, maxPages - used);
+    const excerpt = await prepareExcerpt(wholeFileDecision(book, take), book, provider);
+    const sent = excerptPageCount(excerpt);
+    parts.push(excerpt);
+    used += sent;
+    if (sent < book.pageCount) {
+      onNotice(
+        'warn',
+        `《${book.name}》共 ${book.pageCount} 页，本轮只送入前 ${sent} 页（通道上限）。`
+      );
+    }
+  }
+
+  if (chapterDecision && chapterBook && used < maxPages) {
+    const remaining = maxPages - used;
+    const span = chapterDecision.endPage - chapterDecision.startPage + 1;
+    const clipped: RoutingDecision = {
+      ...chapterDecision,
+      endPage: chapterDecision.startPage + Math.min(span, remaining) - 1,
+    };
+    parts.push(await prepareExcerpt(clipped, chapterBook, provider));
+  } else if (chapterDecision && chapterBook && used >= maxPages) {
+    onNotice('warn', `章节切片未送入：整份文件已占满本轮页数预算。`);
+  }
+
+  return mergeExcerpts(parts);
 }
 
 export interface AnswerOptions {

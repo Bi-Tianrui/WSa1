@@ -69,13 +69,13 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
             <span title={mountedBooks.map((b) => b.name.replace(/\.pdf$/i, '')).join(' · ')}>
               {mountedBooks.length === 1
                 ? mountedBooks[0].name.replace(/\.pdf$/i, '')
-                : `${mountedBooks.length} 本教材`}
+                : `${mountedBooks.length} 份文件`}
               {lastContextTokens
                 ? `  ·  ~${Math.max(1, Math.round(lastContextTokens / 1000))}k`
                 : ''}
             </span>
           ) : (
-            <span>未挂载教材</span>
+            <span>未挂载文件</span>
           )}
         </div>
         {selectedModel && (
@@ -86,7 +86,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
       <div className="flex-1 overflow-y-auto px-4 md:px-6 py-6">
         {messages.length === 0 && (
           <div className="max-w-2xl mx-auto mt-8 space-y-4">
-            <p className="text-sm text-zinc-500">挂载 PDF 后提问，模型会阅读对应章节页面。</p>
+            <p className="text-sm text-zinc-500">左侧选一种方式上传 PDF：教材走章节切片，习题或短文走整份阅读。</p>
             <div className="flex flex-wrap gap-2">
               {[
                 {

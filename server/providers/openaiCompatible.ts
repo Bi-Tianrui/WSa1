@@ -7,7 +7,7 @@ const ANSWER_TIMEOUT_MS = 180_000;
 
 type ContentPart =
   | { type: 'text'; text: string }
-  | { type: 'image_url'; image_url: { url: string; detail: 'high' } };
+  | { type: 'image_url'; image_url: { url: string; detail?: 'high' } };
 
 type ChatMessage = {
   role: 'system' | 'user' | 'assistant';
@@ -26,19 +26,26 @@ function authHeaders(apiKey: string): Record<string, string> {
   };
 }
 
+function usesDashScopeCompatible(baseUrl: string): boolean {
+  return /dashscope|qwencloudapi/i.test(baseUrl);
+}
+
 /**
  * Renders pages as image parts.
  *
- * `detail: 'high'` is required rather than cosmetic: at low detail the endpoint
- * downsamples to a thumbnail, and textbook body text stops being legible.
+ * OpenAI-compatible vision endpoints need `detail: 'high'` or they downsample to a
+ * thumbnail. DashScope's Qwen-VL compatible mode does not take that field.
  */
-function imageParts(payload: VisualPayload): ContentPart[] {
+function imageParts(payload: VisualPayload, baseUrl: string): ContentPart[] {
+  const highDetail = !usesDashScopeCompatible(baseUrl);
   const parts: ContentPart[] = [];
   for (const image of payload.images || []) {
     parts.push({ type: 'text', text: `【第 ${image.pageNumber} 页】` });
     parts.push({
       type: 'image_url',
-      image_url: { url: `data:image/jpeg;base64,${image.base64}`, detail: 'high' },
+      image_url: highDetail
+        ? { url: `data:image/jpeg;base64,${image.base64}`, detail: 'high' }
+        : { url: `data:image/jpeg;base64,${image.base64}` },
     });
   }
   return parts;
@@ -131,7 +138,7 @@ export const openAiCompatibleProvider: ChatProvider = {
         body: JSON.stringify({
           model: req.model,
           messages: [
-            { role: 'user', content: [...imageParts(req.payload), { type: 'text', text: req.prompt }] },
+            { role: 'user', content: [...imageParts(req.payload, req.credentials.baseUrl), { type: 'text', text: req.prompt }] },
           ],
           temperature: 0.1,
         }),
@@ -159,7 +166,7 @@ export const openAiCompatibleProvider: ChatProvider = {
             text: `【教材原页精读素材 - 《${req.excerpt.bookName}》「${req.excerpt.chapterTitle}」第 ${req.excerpt.pageRange[0]} - ${req.excerpt.pageRange[1]} 页】
 以下为该章节的教材原始页面影像，请直接阅读页面上的公式排版、插图与定理叙述，引用时标注具体页码。`,
           },
-          ...imageParts(req.excerpt),
+          ...imageParts(req.excerpt, req.credentials.baseUrl),
           { type: 'text', text: req.prompt },
         ],
       });
